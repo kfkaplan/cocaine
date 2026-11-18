@@ -1,0 +1,535 @@
+// Native stand-ins for guest library functions (see hooks.h), and calling
+// guest code from native code.
+
+#include "kernel/hooks.h"
+
+#include <fcntl.h>
+#include <sys/param.h>
+#include <unistd.h>
+
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include "kernel/process.h"
+
+namespace {
+
+// Every function taken over, in host call order. Shared by the whole host
+// process, which is one guest process.
+struct Hook {
+  std::string name;
+  void (*fn)(GuestCall&);
+};
+std::mutex g_hooks_mu;
+std::vector<Hook> g_hooks;
+std::unordered_map<std::string, u32> g_hook_index;
+std::unordered_map<u32, u32> g_originals;  // hook index -> the guest's own function, moved
+
+// How long the Intel instruction at `p` is, for the few that start functions;
+// 0 for any other.
+u32 prologue_length(const u8* p) {
+  switch (p[0]) {
+    case 0x55: case 0x53: case 0x56: case 0x57: case 0x50: case 0x51: case 0x52: return 1;  // push
+    case 0x89: case 0x8B:  // mov between registers, or with a small displacement from a register
+      if ((p[1] & 0xC0) == 0xC0) return 2;
+      if ((p[1] & 0xC7) == 0x45 || (p[1] & 0xC7) == 0x44) return (p[1] & 7) == 4 ? 4 : 3;
+      return 0;
+    case 0x83: return (p[1] & 0xF8) == 0xE8 || (p[1] & 0xF8) == 0xC0 ? 3 : 0;   // sub/add esp, imm8
+    case 0x81: return (p[1] & 0xF8) == 0xE8 || (p[1] & 0xF8) == 0xC0 ? 6 : 0;   // sub/add esp, imm32
+    case 0xE8: return 5;  // call, replaced by a push of its return address and a jump (see keep_original)
+    default: return 0;
+  }
+}
+
+u32 hook_for(const std::string& name, void (*fn)(GuestCall&)) {
+  std::lock_guard<std::mutex> lk(g_hooks_mu);
+  auto it = g_hook_index.find(name);
+  if (it != g_hook_index.end()) return it->second;
+  const u32 index = (u32)g_hooks.size();
+  g_hooks.push_back({name, fn});
+  g_hook_index[name] = index;
+  return index;
+}
+
+u32 be32(const u8* p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
+u32 le32(const u8* p) { return (u32)p[3] << 24 | (u32)p[2] << 16 | (u32)p[1] << 8 | p[0]; }
+
+// The exported functions of the slice of `path` that starts at
+// `slice_offset`: names without the leading underscore, unslid addresses.
+// Also the __TEXT segment's address and file offset.
+bool read_exports(const std::string& path, u64 slice_offset, bool big_endian, u32& text_vmaddr, u32& text_fileoff,
+                  std::vector<std::pair<std::string, u32>>& out) {
+  const int fd = open(path.c_str(), O_RDONLY);
+  if (fd < 0) return false;
+  auto read_at = [&](u64 at, u64 n, std::vector<u8>& buf) {
+    buf.resize(n);
+    u64 done = 0;
+    while (done < n) {
+      const ssize_t r = pread(fd, buf.data() + done, n - done, (off_t)(at + done));
+      if (r <= 0) return false;
+      done += (u64)r;
+    }
+    return true;
+  };
+  auto rd = [&](const u8* p) { return big_endian ? be32(p) : le32(p); };
+  std::vector<u8> head;
+  bool ok = read_at(slice_offset, 28, head);
+  if (ok) {
+    const u32 ncmds = rd(&head[16]), sizeofcmds = rd(&head[20]);
+    std::vector<u8> cmds;
+    ok = read_at(slice_offset + 28, sizeofcmds, cmds);
+    u32 symoff = 0, nsyms = 0, stroff = 0, strsize = 0;
+    bool have_text = false;
+    for (u32 k = 0, off = 0; ok && k < ncmds && off + 8 <= cmds.size(); k++) {
+      const u32 cmd = rd(&cmds[off]), size = rd(&cmds[off + 4]);
+      if (cmd == 1 && off + 56 <= cmds.size() && !memcmp(&cmds[off + 8], "__TEXT", 7)) {  // LC_SEGMENT
+        text_vmaddr = rd(&cmds[off + 24]);
+        text_fileoff = rd(&cmds[off + 32]);
+        have_text = true;
+      } else if (cmd == 2 && off + 24 <= cmds.size()) {  // LC_SYMTAB
+        symoff = rd(&cmds[off + 8]);
+        nsyms = rd(&cmds[off + 12]);
+        stroff = rd(&cmds[off + 16]);
+        strsize = rd(&cmds[off + 20]);
+      }
+      if (size < 8) break;
+      off += size;
+    }
+    std::vector<u8> syms, strs;
+    ok = ok && have_text && nsyms && read_at(slice_offset + symoff, (u64)nsyms * 12, syms) &&
+         read_at(slice_offset + stroff, strsize, strs);
+    for (u32 k = 0; ok && k < nsyms; k++) {
+      const u8* n = &syms[12 * k];
+      const u32 strx = rd(n), value = rd(n + 8);
+      const u8 type = n[4], sect = n[5];
+      // External (or private to the library's own files), defined in the
+      // first section (__text), not a debugging entry.
+      if ((type & 0xE0) || (type & 0x0E) != 0x0E || !(type & 0x11) || sect != 1) continue;
+      if (strx >= strs.size() || strs[strx] != '_') continue;
+      const char* name = (const char*)&strs[strx + 1];
+      out.emplace_back(std::string(name, strnlen(name, strs.size() - strx - 1)), value);
+    }
+  }
+  close(fd);
+  return ok;
+}
+
+// Where the slice for this CPU starts in a file: 0 for a thin file.
+bool slice_of(int fd, bool powerpc, u64& offset) {
+  u8 h[8 + 20 * 8];
+  const ssize_t n = pread(fd, h, sizeof h, 0);
+  if (n < 8) return false;
+  if (be32(h) != 0xCAFEBABE) {
+    offset = 0;
+    return true;
+  }
+  const u32 count = be32(h + 4);
+  for (u32 k = 0; k < count && 8 + 20 * (k + 1) <= (u32)n; k++) {
+    const u32 cpu = be32(h + 8 + 20 * k);
+    if (cpu == (powerpc ? 18u : 7u)) {
+      offset = be32(h + 8 + 20 * k + 8);
+      return true;
+    }
+  }
+  return false;
+}
+
+void not_done_yet(GuestCall& c);
+
+// Words changed in a library's code as it is mapped, each checked first, so
+// that a library built differently is left alone.
+struct CodePatch {
+  u32 addr;     // unslid
+  u32 expect;   // the word there, as the guest reads it
+  u32 replace;
+};
+
+constexpr u32 lfs(u32 fr, u32 ra, s32 d) { return 0xC0000000u | fr << 21 | ra << 16 | ((u32)d & 0xFFFF); }
+
+// Leopard's window server makes its virtual display 1280 x 1024, in two
+// places in CoreGraphics: the rectangle CGXConstructVirtualFramebufferSet
+// gives the framebuffer (two float constants), and the display modes it
+// offers (a table of 1280 x 1024 at 8, 16 and 32 bits a pixel, with each
+// one's bytes to a row). Here both become the size cocaine wants: PowerPC's
+// loads of the constants are pointed at the size cocaine keeps in the comm
+// page, Intel's constants (immediates in the code) are replaced, and the
+// table is rewritten in place.
+std::vector<CodePatch> display_size_patches(bool powerpc) {
+  u32 w = 0, h = 0;
+  guest_display_size(w, h);
+  std::vector<CodePatch> out;
+  if (powerpc) {
+    const s32 W = (s32)(s16)(kPPCDisplaySizeAddr & 0xFFFF), H = W + 4;
+    out = {{0xF413C, lfs(0, 26, -4460), lfs(0, 0, H)},
+           {0xF4140, lfs(13, 25, -4292), lfs(13, 0, W)},
+           {0xF41C8, lfs(13, 2, -4460), lfs(13, 0, H)},
+           {0xF41CC, lfs(0, 9, -4292), lfs(0, 0, W)}};
+  } else {
+    const float fw = (float)w, fh = (float)h;
+    u32 bw, bh;
+    memcpy(&bw, &fw, 4);
+    memcpy(&bh, &fh, 4);
+    out = {{0x154140, 0x44A00000u, bw}, {0x154147, 0x44800000u, bh}, {0x1541D1, 0x44A00000u, bw},
+           {0x1541D8, 0x44800000u, bh}};
+  }
+  const u32 table = powerpc ? 0x56C000 : 0x6904B0;
+  const u32 rows[3] = {0x540, 0xA00, 0x1400}, now[3] = {w + 64, w * 2, w * 4};
+  for (u32 k = 0; k < 3; k++) {
+    const u32 entry = table + 0xC8 * k;
+    out.push_back({entry, 1280, w});
+    out.push_back({entry + 4, 1024, h});
+    out.push_back({entry + 12, rows[k], now[k]});
+  }
+  return out;
+}
+constexpr const char* kCoreGraphics = "/CoreGraphics.framework/Versions/A/CoreGraphics";
+
+bool ends_with(const std::string& s, const char* suffix) {
+  const size_t n = strlen(suffix);
+  return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
+}
+
+}  // namespace
+
+// ---- arguments ----------------------------------------------------------------
+// The Mac OS X PowerPC convention: integer arguments in r3-r10 and then on
+// the stack, 24 bytes above the stack pointer, one word each; floating point
+// ones in f1-f13, though each still uses up the integer words it would have
+// taken (one for a float, two for a double). The Intel one: everything on
+// the stack, just above the return address.
+
+GuestCall::GuestCall(Process& p, Thread& t)
+    : mem(p.memory()), process(p), thread(t), powerpc(p.memory().big_endian()) {}
+
+u32 GuestCall::word(int n) const {
+  if (!powerpc) return mem.r32(thread.x86.reg[X86State::ESP] + 4 + 4 * (u32)n);
+  if (n < 8) return thread.ppc.gpr[3 + n];
+  return mem.r32(thread.ppc.gpr[1] + 24 + 4 * (u32)n);
+}
+u32 GuestCall::i() { return word(word_++); }
+float GuestCall::f() {
+  if (!powerpc) {
+    const u32 bits = word(word_++);
+    float v;
+    memcpy(&v, &bits, 4);
+    return v;
+  }
+  word_ += 1;
+  return (float)thread.ppc.fpr[1 + fpr_++].d;
+}
+double GuestCall::d() {
+  if (!powerpc) {
+    const u64 bits = (u64)word(word_ + 1) << 32 | word(word_);
+    word_ += 2;
+    double v;
+    memcpy(&v, &bits, 8);
+    return v;
+  }
+  word_ += 2;
+  return thread.ppc.fpr[1 + fpr_++].d;
+}
+void GuestCall::ret(u32 v) {
+  if (powerpc) {
+    thread.ppc.gpr[3] = v;
+  } else {
+    thread.x86.reg[X86State::EAX] = v;
+  }
+}
+void GuestCall::ret_f(double v) {
+  if (powerpc) thread.ppc.fpr[1].d = v;
+  // (Intel returns floating point values on the x87 stack; nothing taken over needs it yet.)
+}
+u32 GuestCall::call(u32 fn, std::initializer_list<u32> args) { return process.call_guest(thread, fn, args); }
+u32 GuestCall::symbol(const char* name) { return process.guest_symbol(name); }
+u32 GuestCall::scratch(u32 bytes) { return process.guest_scratch(bytes); }
+
+namespace {
+void not_done_yet(GuestCall& c) {
+  c.ret(0);
+}
+}  // namespace
+
+// ---- taking functions over --------------------------------------------------
+
+void Process::note_code_mapping(u32 at, u32 len, int fd, u64 offset) {
+  const bool powerpc = arch_ == Arch::PPC;
+  char path[MAXPATHLEN];
+  if (fcntl(fd, F_GETPATH, path) != 0) return;
+  u64 slice = 0;
+  if (!slice_of(fd, powerpc, slice)) return;
+  MappedImage img;
+  img.path = path;
+  img.slice_offset = slice;
+  img.at = at;
+  img.len = len;
+  img.offset = offset;
+
+  if (ends_with(img.path, kCoreGraphics) && read_image(img)) {
+    u32 done = 0;
+    const std::vector<CodePatch> patches = display_size_patches(powerpc);
+    for (const CodePatch& p : patches) {
+      const u32 where = p.addr + img.slide;
+      if (where < at || where + 4 > at + len || mem_.r32(where) != p.expect) continue;
+      mem_.w32(where, p.replace);
+      done++;
+    }
+    if (done != patches.size()) {
+      log_warn("this CoreGraphics is not the one cocaine knows: its display may stay 1280 x 1024");
+    }
+    if (const char* f = getenv("COCAINE_NOTE_PATCHES")) {
+      if (FILE* out = fopen(f, "a")) {
+        fprintf(out, "%d %s: CoreGraphics at slide 0x%x: %u of %zu display patches\n", getpid(), exe_path_.c_str(), img.slide, done, patches.size());
+        fclose(out);
+      }
+    }
+  }
+
+  // Is it one whose functions cocaine supplies?
+  const HookLibrary* lib = nullptr;
+  for (auto list : {gl_hook_libraries, al_hook_libraries, audio_hook_libraries, display_hook_libraries}) {
+    size_t nlibs = 0;
+    const HookLibrary* libs = list(nlibs);
+    for (size_t k = 0; k < nlibs; k++) {
+      if (!powerpc && !libs[k].intel) continue;
+      if (ends_with(img.path, libs[k].suffix)) lib = &libs[k];
+    }
+  }
+
+  if (lib) {
+    if (!read_image(img) || !img.usable) return;
+    std::unordered_map<std::string, void (*)(GuestCall&)> mine;
+    std::unordered_set<std::string> keep;
+    for (size_t k = 0; k < lib->count; k++) {
+      mine[lib->specs[k].name] = lib->specs[k].fn;
+      if (lib->specs[k].keep) keep.insert(lib->specs[k].name);
+    }
+    const size_t pl = strlen(lib->prefix);
+    u32 taken = 0;
+    for (const auto& [name, addr] : img.exports) {
+      auto it = mine.find(name);
+      if (pl ? name.compare(0, pl, lib->prefix) != 0 : it == mine.end()) continue;
+      const u32 where = addr + img.slide;
+      if (where < at || where + 4 > at + len) continue;
+      const u32 index = hook_for(name, it != mine.end() ? it->second : nullptr);
+      if (keep.count(name)) {
+        const u32 kept = keep_original(where);
+        if (!kept) log_warn("can't keep the guest's own %s; calls cocaine doesn't handle will fail", name.c_str());
+        std::lock_guard<std::mutex> lk(g_hooks_mu);
+        g_originals[index] = kept;
+      }
+      plant_host_call(where, kHookCallBase + index);
+      taken++;
+    }
+    log_debug("took over %u functions of %s", taken, img.path.c_str());
+  }
+  std::lock_guard<std::mutex> lk(images_mu_);
+  images_.push_back(std::move(img));
+}
+
+// Keeps the start of a function cocaine is about to overwrite, followed by a
+// jump back into the rest of it, so that the guest's version stays callable.
+u32 Process::keep_original(u32 fn) {
+  const u32 at = guest_scratch(32);
+  if (!at) return 0;
+  if (arch_ == Arch::PPC) {
+    const u32 first = mem_.r32(fn);
+    const u32 op = first >> 26;
+    if (op == 16 || op == 18) return 0;  // a relative branch can't move
+    const u32 back = fn + 4;
+    mem_.w32(at, first);
+    mem_.w32(at + 4, 0x3D800000u | (back >> 16));          // lis r12, hi
+    mem_.w32(at + 8, 0x618C0000u | (back & 0xFFFF));        // ori r12, r12, lo
+    mem_.w32(at + 12, 0x7D8903A6u);                         // mtctr r12
+    mem_.w32(at + 16, 0x4E800420u);                         // bctr
+    return at;
+  }
+  // n walks the original, d the copy: they part once a call is rewritten.
+  u32 n = 0, d = 0;
+  while (n < 4) {
+    const u32 len = prologue_length(mem_.host(fn + n));
+    if (!len) return 0;
+    if (mem_.r8(fn + n) == 0xE8) {
+      // A call moved as it is would push a return address inside the copy,
+      // and code that reads its own location from that address (call next;
+      // pop ebx, or a get_pc_thunk helper) would get the copy's. So push the
+      // return address the original would have pushed, and jump to the
+      // target. The call returns into the original function past the bytes
+      // overwritten (a call here always ends beyond the first four), so
+      // nothing more is copied and no jump back is needed.
+      const u32 ret = fn + n + 5;
+      const u32 target = ret + mem_.r32(fn + n + 1);
+      mem_.w8(at + d, 0x68);  // push imm32
+      mem_.w32(at + d + 1, ret);
+      mem_.w8(at + d + 5, 0xE9);  // jmp rel32
+      mem_.w32(at + d + 6, target - (at + d + 10));
+      return at;
+    }
+    memcpy(mem_.host(at + d), mem_.host(fn + n), len);
+    n += len;
+    d += len;
+  }
+  // At most three bytes, one instruction of up to six and this jump: well
+  // within the 32 bytes taken.
+  mem_.w8(at + d, 0xE9);  // jmp to the rest
+  mem_.w32(at + d + 1, (fn + n) - (at + d + 5));
+  return at;
+}
+
+void Process::run_hook(Thread& t, u32 index) {
+  Hook h;
+  u32 original = 0;
+  {
+    std::lock_guard<std::mutex> lk(g_hooks_mu);
+    if (index >= g_hooks.size()) return;
+    h = g_hooks[index];
+    if (auto it = g_originals.find(index); it != g_originals.end()) original = it->second;
+  }
+  GuestCall c(*this, t);
+  c.original_ = original;
+  if (h.fn) {
+    h.fn(c);
+  } else {
+    static std::mutex said_mu;
+    static std::unordered_set<std::string> said;
+    std::lock_guard<std::mutex> lk(said_mu);
+    if (said.insert(h.name).second) log_warn("%s is not passed through to the Mac yet", h.name.c_str());
+    not_done_yet(c);
+  }
+  // The function's first instruction was the host call: return from it.
+  if (arch_ == Arch::PPC) {
+    t.ppc.pc = t.ppc.lr & ~3u;
+  } else {
+    X86State& s = t.x86;
+    s.eip = mem_.r32(s.reg[X86State::ESP]);
+    s.reg[X86State::ESP] += 4;
+  }
+}
+
+// A host call instruction at `where`: one word on PowerPC, `int 0xFE` and the
+// number (four bytes) on Intel.
+void Process::plant_host_call(u32 where, u32 id) {
+  if (arch_ == Arch::PPC) {
+    mem_.w32(where, kPPCHostCall | id);
+  } else {
+    const u8 code[4] = {0xCD, kX86HostCallVector, (u8)id, (u8)(id >> 8)};
+    memcpy(mem_.host(where), code, 4);
+  }
+}
+
+// The window server's CGXUpdateDisplay puts each update on the screen. When
+// it returns, the display holds a whole picture, and it is handed to the
+// viewer then, on the window server's own thread, before the next update can
+// start: no picture of a window half redrawn.
+namespace {
+void display_updated(GuestCall& c) {
+  u32 w[8];
+  for (u32& v : w) v = c.i();
+  const u32 r = c.original() ? c.call(c.original(), {w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]}) : 0;
+  c.process.publish_display();
+  c.ret(r);
+}
+const HookSpec kDisplay[] = {{"CGXUpdateDisplay", display_updated, true}};
+const HookLibrary kDisplayLibraries[] = {
+    {"/CoreGraphics.framework/Versions/A/CoreGraphics", "", kDisplay, 1, true},
+};
+}  // namespace
+const HookLibrary* display_hook_libraries(size_t& n) {
+  n = 1;
+  return kDisplayLibraries;
+}
+
+u32 native_function(Process& p, const char* name, void (*fn)(GuestCall&)) {
+  const u32 index = hook_for(name, fn);
+  const u32 at = p.guest_scratch(16);
+  if (at) p.plant_host_call(at, kHookCallBase + index);
+  return at;
+}
+
+// Reads a mapped library's exported functions, the first time they are wanted.
+bool Process::read_image(MappedImage& img) {
+  if (img.read) return img.usable;
+  img.read = true;
+  u32 text_vmaddr = 0, text_fileoff = 0;
+  if (!read_exports(img.path, img.slice_offset, arch_ == Arch::PPC, text_vmaddr, text_fileoff, img.exports))
+    return false;
+  // Only the mapping of __TEXT says where the library went.
+  img.usable = img.offset == img.slice_offset + text_fileoff;
+  img.slide = img.at - text_vmaddr;
+  return img.usable;
+}
+
+u32 Process::guest_symbol(const std::string& name) {
+  std::lock_guard<std::mutex> lk(images_mu_);
+  for (MappedImage& img : images_) {
+    if (!read_image(img)) continue;
+    for (const auto& [n, addr] : img.exports) {
+      if (n == name) return addr + img.slide;
+    }
+  }
+  return 0;
+}
+
+u32 Process::guest_scratch(u32 bytes) {
+  std::lock_guard<std::mutex> lk(images_mu_);
+  bytes = (bytes + 15) & ~15u;
+  if (bytes > scratch_left_) {
+    const u32 size = bytes > 0x100000 ? (bytes + 0xFFFF) & ~0xFFFFu : 0x100000;
+    const u32 at = mem_.find_free(size, 0x10000000u, 0xC0000000u);
+    if (!at || !mem_.map(at, size, GuestMemory::kRead | GuestMemory::kWrite | GuestMemory::kExec)) return 0;  // code too: stubs, trampolines
+    scratch_at_ = at;
+    scratch_left_ = size;
+  }
+  const u32 at = scratch_at_;
+  scratch_at_ += bytes;
+  scratch_left_ -= bytes;
+  return at;
+}
+
+// ---- calling the guest ------------------------------------------------------
+
+u32 Process::call_guest(Thread& t, u32 fn, std::initializer_list<u32> args) {
+  if (!fn) return 0;
+  if (arch_ != Arch::PPC) {  // the arguments on the stack, and a return address that comes back here
+    const X86State saved = t.x86;
+    X86State& s = t.x86;
+    const u32 n = (u32)args.size();
+    const u32 base = (saved.reg[X86State::ESP] - 1024) & ~15u;
+    const u32 args_at = base - ((4 * n + 15) & ~15u);  // sixteen-byte aligned, as the Mac's convention wants
+    u32 k = 0;
+    for (u32 a : args) mem_.w32(args_at + 4 * k++, a);
+    s.reg[X86State::ESP] = args_at - 4;
+    mem_.w32(args_at - 4, kX86GuestReturnAddr);
+    s.eip = fn;
+    t.returned = false;
+    run_x86(t);
+    const u32 result = s.reg[X86State::EAX];
+    const u64 icount = s.icount;
+    t.x86 = saved;
+    t.x86.icount = icount;
+    return result;
+  }
+  const PPCState saved = t.ppc;
+  PPCState& s = t.ppc;
+  // A fresh frame well below the caller's, past the 224 bytes below the
+  // stack pointer that a PowerPC function may use without moving it.
+  const u32 sp = (saved.gpr[1] - 1024) & ~15u;
+  mem_.w32(sp, saved.gpr[1]);
+  s.gpr[1] = sp;
+  int k = 0;
+  for (u32 a : args) {
+    if (k < 8) s.gpr[3 + k++] = a;
+  }
+  s.lr = kPPCGuestReturnAddr;
+  s.pc = fn & ~3u;
+  t.returned = false;
+  run_ppc(t);
+  const u32 result = s.gpr[3];
+  const u64 icount = s.icount;
+  t.ppc = saved;
+  t.ppc.icount = icount;
+  return result;
+}

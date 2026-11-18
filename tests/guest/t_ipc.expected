@@ -1,0 +1,10 @@
+register: 0
+too small a buffer: 0x10004004, message needs 64 bytes
+request: 0, number 7001, value 0x12345678, 2 descriptors
+out of line: 20000 bytes, intact
+sender is the child: yes
+callback: 0
+watch: 0
+reply: 0
+client exit status: 3
+port died: 0, notice 72, about the callback port: yes

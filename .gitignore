@@ -1,0 +1,14 @@
+build/
+.DS_Store
+
+# Mac OS X system roots are Apple's files: keep them out of the repository.
+sysroots/
+
+# Programs and media for trying things out: other people's work, not ours to publish.
+test-games/
+test-canidates/
+*.dmg
+*.mp3
+
+# A stray file from a command that took "~" literally.
+/~

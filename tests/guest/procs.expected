@@ -1,0 +1,17 @@
+substitution: SUB
+subshell status: 7
+false: 1
+3
+background job: 0
+gamma
+beta
+script: 2 arguments, first x
+awk script: 42
+missing program: 127
+caught USR1
+killed child: 143
+powerpc
+i386
+perl: backtick
+perl: system
+exit trap
