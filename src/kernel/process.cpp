@@ -220,6 +220,21 @@ bool Process::load(const MachImage& exe, const std::vector<std::string>& host_ar
   return true;
 }
 
+const char* Process::image_of(u32 pc, u32& offset) const {
+  // try_lock: a crash report must not wait on a lock the crashed thread may hold.
+  if (!images_mu_.try_lock()) return nullptr;
+  const char* found = nullptr;
+  for (const MappedImage& img : images_) {
+    if (pc >= img.at && pc - img.at < img.len) {
+      offset = pc - img.at;
+      found = img.path.c_str();
+      break;
+    }
+  }
+  images_mu_.unlock();
+  return found;
+}
+
 void Process::dump_registers(const Thread& t) const {
   if (arch_ == Arch::PPC) {
     const PPCState& s = t.ppc;
@@ -242,7 +257,11 @@ void Process::dump_registers(const Thread& t) const {
     for (int depth = 0; depth < 16; depth++) {
       u32 back = 0, ret = 0;
       if (!word(frame, back) || back <= frame || !word(back + 8, ret)) break;
-      std::fprintf(stderr, " %08x", ret);
+      u32 off = 0;
+      const char* lib = image_of(ret, off);
+      if (const char* slash = lib ? strrchr(lib, '/') : nullptr) lib = slash + 1;
+      std::fprintf(stderr, "\n    %08x", ret);
+      if (lib) std::fprintf(stderr, "  %s + 0x%x", lib, off);
       frame = back;
     }
     std::fprintf(stderr, "\n");

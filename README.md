@@ -13,10 +13,11 @@ and answers their requests to the Mac OS X kernel itself.
 Command line programs from a real Mac OS X 10.5 run on both CPUs, including
 ones built on CoreFoundation and Foundation, and so do its shells: they start
 other programs, pipe them together and trap signals. Guest processes exchange
-Mach messages, and five of Apple's own system daemons run as guests and
+Mach messages, and six of Apple's own system daemons run as guests and
 serve them: `notifyd`, the directory daemon (so the guest system knows the
-person running it, by name), `dirhelper`, the security daemon and Launch
-Services.
+person running it, by name), `dirhelper`, the security daemon, Launch
+Services and `configd`, which keeps the system's settings (without its
+plug-ins, which would manage the Mac's real network interfaces).
 
 Real apps open windows, on both CPUs. Run Calculator and Apple's own
 `WindowServer`, font server and `loginwindow` start behind it as guests; the
@@ -81,7 +82,7 @@ one; a button in Calculator reacts in under 10 ms.
 | A PowerPC program starting an Intel one, and the reverse (`arch`) | works |
 | Mach messages between guest processes: port rights, out-of-line memory, port sets, kernel notices | work on both CPUs |
 | Session server (the stand-in for `launchd`): service lookup, check-in, daemons started on demand | works |
-| Apple's `notifyd`, `DirectoryService`, `dirhelper`, `securityd` and `coreservicesd`, running as guest daemons | work on both CPUs |
+| Apple's `notifyd`, `DirectoryService`, `dirhelper`, `securityd`, `coreservicesd` and `configd`, running as guest daemons | work on both CPUs |
 | Users and groups, resolved by the directory daemon (the current user is added to its records) | work on both CPUs |
 | Named shared memory, shared file mappings, `kqueue`, record locks, passing files over sockets | work on both CPUs |
 | Guests' `syslog` messages, collected in the session's log | works |
@@ -148,7 +149,7 @@ environment variables, none of which change anything unless set:
 | `COCAINE_SESSION_TRACE=1` | log every request the session server receives, with its sender |
 | `COCAINE_JIT=0` | interpret guest code instead of translating it |
 | `COCAINE_JIT_STATS=1` | on exit, say how much was translated and which instructions were left to the interpreter |
-| `COCAINE_FAULT_MEM=r6:160,@2eebd0:16` | when a PowerPC guest crashes, also print memory at those registers or addresses |
+| `COCAINE_FAULT_MEM=r6:160,@2eebd0:16` | when a PowerPC guest crashes, also print memory at those registers or addresses (the crash report always names the library each caller is in) |
 | `COCAINE_NAN=1` | report the first places a PowerPC guest's floating point arithmetic makes a NaN out of numbers, with the inputs (interpreted, so slow) |
 | `COCAINE_GL_FRAME=n:file` | save OpenGL frame n, as cocaine read it back from the Mac's GPU, to `file` (raw, A R G B, bottom row first) |
 | `COCAINE_GL_FPS=60` | the most frames a second an OpenGL game is shown at (60 unless set, as vertical sync held games to on a Mac of the time; 0 for no limit) |

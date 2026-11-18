@@ -322,6 +322,10 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
       return object(kNotification);
     case 2851:  // io_service_acknowledge_notification
       return code(KERN_SUCCESS);
+    case 2805:  // io_registry_entry_get_property(name) -> value
+      // No object here has properties to give (the menu bar asks the root
+      // for IOConsoleUsers, the login sessions, each time a menu opens).
+      return code(kNotFound);
   }
   (void)name;
   return false;

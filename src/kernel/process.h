@@ -149,6 +149,8 @@ class Process {
   int run_ppc(Thread& t);
   int run_x86(Thread& t);
   void dump_registers(const Thread& t) const;
+  // The mapped library holding guest address `pc`, and how far into it, for crash reports.
+  const char* image_of(u32 pc, u32& offset) const;
 
   // ---- syscalls.cpp: BSD system calls ----
   void ppc_syscall(Thread& t);
@@ -203,7 +205,7 @@ class Process {
   };
   bool read_image(MappedImage& img);
   std::vector<MappedImage> images_;
-  std::mutex images_mu_;
+  mutable std::mutex images_mu_;
   u32 scratch_at_ = 0, scratch_left_ = 0;
 
   // ---- commpage.cpp ----

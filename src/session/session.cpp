@@ -74,6 +74,34 @@ const char* const kWorkingDaemons[] = {
     "com.apple.bsd.dirhelper",      // per-user temporary folders
     "com.apple.SecurityServer",     // securityd: security sessions, keychains
     "com.apple.coreservicesd",      // Launch Services: which apps exist and are running
+    "com.apple.configd",            // system settings and their change notices (see kExtraArguments)
+};
+// Arguments added to a daemon's own. configd's plug-ins manage the Mac's
+// real network interfaces, power and Bluetooth, none of which a guest
+// should touch; -b runs it without them, serving settings and notices only.
+// Apple's code assumes configd is always there: the Apple menu, for one,
+// crashes in SCPreferences when it isn't.
+const struct {
+  const char* job;
+  const char* argument;
+} kExtraArguments[] = {
+    {"com.apple.configd", "-b"},
+    // configd stays in the foreground only for launchd, process 1, which
+    // the session server isn't; otherwise it forks itself away.
+    {"com.apple.configd", "-d"},
+};
+
+// Services a daemon is told don't exist. The directory daemon asks configd
+// to register it while starting, and waits; configd, while starting, looks
+// up a user, which means asking the directory daemon: neither would ever
+// answer. On a real Mac configd is up long before the directory daemon. Told
+// the directory daemon isn't there, configd's library reads /etc/passwd, as
+// in single-user mode; configd only ever needs root.
+const struct {
+  const char* job;
+  const char* service;
+} kHiddenServices[] = {
+    {"com.apple.configd", "com.apple.system.DirectoryService.libinfo_v1"},
 };
 // ... and the ones that put windows on the screen. The Intel halves of the
 // font server and the login window are stored encrypted (see
@@ -492,6 +520,9 @@ void Server::load_jobs(const std::string& guest_dir) {
         CFDictionaryGetKeysAndValues((CFDictionaryRef)ms, keys.data(), nullptr);
         for (const void* k : keys) names.push_back(to_string(k));
       }
+      for (const auto& extra : kExtraArguments) {
+        if (job.label == extra.job && !job.argv.empty()) job.argv.push_back(extra.argument);
+      }
       // A job with no services of its own is only kept if asked for by name.
       if (allowed.count(job.label) || (all && !names.empty())) add_job(std::move(job), names);
     }
@@ -879,6 +910,14 @@ void Server::handle(mach_msg_header_t* h) {
         return;
       }
       const std::string name = name_at(32);
+      bool hidden = false;
+      for (const auto& h : kHiddenServices) {
+        hidden |= sender_job >= 0 && jobs_[(size_t)sender_job].label == h.job && name == h.service;
+      }
+      if (hidden) {
+        reply_code(reply, id + 100, be, kUnknownService);
+        break;
+      }
       const auto it = services_.find(name);
       if (it == services_.end() || (!it->second.port && it->second.job < 0)) {
         // A name some daemon publishes for itself, once started?
