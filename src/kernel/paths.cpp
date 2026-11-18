@@ -14,6 +14,7 @@
 #include <climits>
 
 #include "kernel/process.h"
+#include "session/art.h"
 
 namespace {
 
@@ -183,6 +184,16 @@ std::string Process::host_path(const std::string& guest, bool follow_last) const
         const std::string in_root = root + "/usr/share/zoneinfo/" + (name + 9);
         if (access(in_root.c_str(), R_OK) == 0) return in_root;
       }
+    }
+  }
+  // Leopard's art file, with cocaine's logo in the menu bar (session/art.cpp).
+  static const std::string kArtName = "/SArtFile.bin";
+  if (path.size() > kArtName.size() && path.compare(path.size() - kArtName.size(), kArtName.size(), kArtName) == 0) {
+    const std::string t = tidy(path);
+    if (t == "/System/Library/PrivateFrameworks/CoreUI.framework/Resources/SArtFile.bin" ||
+        t == "/System/Library/PrivateFrameworks/CoreUI.framework/Versions/A/Resources/SArtFile.bin") {
+      const std::string made = menu_logo_file(root);
+      if (access(made.c_str(), R_OK) == 0) return made;
     }
   }
   // Carbon's file code names a file by volume number, folder number and

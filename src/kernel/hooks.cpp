@@ -492,6 +492,12 @@ u32 Process::guest_scratch(u32 bytes) {
 // ---- calling the guest ------------------------------------------------------
 
 u32 Process::call_guest(Thread& t, u32 fn, std::initializer_list<u32> args) {
+  std::vector<GuestArg> words;
+  for (u32 a : args) words.push_back({a});
+  return call_guest_args(t, fn, words);
+}
+
+u32 Process::call_guest_args(Thread& t, u32 fn, const std::vector<GuestArg>& args) {
   if (!fn) return 0;
   if (arch_ != Arch::PPC) {  // the arguments on the stack, and a return address that comes back here
     const X86State saved = t.x86;
@@ -500,7 +506,7 @@ u32 Process::call_guest(Thread& t, u32 fn, std::initializer_list<u32> args) {
     const u32 base = (saved.reg[X86State::ESP] - 1024) & ~15u;
     const u32 args_at = base - ((4 * n + 15) & ~15u);  // sixteen-byte aligned, as the Mac's convention wants
     u32 k = 0;
-    for (u32 a : args) mem_.w32(args_at + 4 * k++, a);
+    for (const GuestArg& a : args) mem_.w32(args_at + 4 * k++, a.bits);
     s.reg[X86State::ESP] = args_at - 4;
     mem_.w32(args_at - 4, kX86GuestReturnAddr);
     s.eip = fn;
@@ -519,9 +525,18 @@ u32 Process::call_guest(Thread& t, u32 fn, std::initializer_list<u32> args) {
   const u32 sp = (saved.gpr[1] - 1024) & ~15u;
   mem_.w32(sp, saved.gpr[1]);
   s.gpr[1] = sp;
-  int k = 0;
-  for (u32 a : args) {
-    if (k < 8) s.gpr[3 + k++] = a;
+  // Integers in r3 to r10; floats in f1 to f13, each still using up an
+  // integer register's place, as Apple's PowerPC convention has it.
+  int k = 0, f = 0;
+  for (const GuestArg& a : args) {
+    if (a.is_float) {
+      float v;
+      memcpy(&v, &a.bits, 4);
+      if (f < 13) s.fpr[1 + f++].d = v;
+      k++;
+    } else if (k < 8) {
+      s.gpr[3 + k++] = a.bits;
+    }
   }
   s.lr = kPPCGuestReturnAddr;
   s.pc = fn & ~3u;

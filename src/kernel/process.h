@@ -133,6 +133,16 @@ class Process {
   // Runs a guest function from native code, on thread `t`, and returns its
   // integer result. The thread's registers are as they were afterwards.
   u32 call_guest(Thread& t, u32 fn, std::initializer_list<u32> args);
+  // The same, for functions taking floats: each argument a word, marked if it
+  // is a float's bits (they travel in floating point registers on PowerPC).
+  struct GuestArg {
+    u32 bits;
+    bool is_float = false;
+  };
+  u32 call_guest_args(Thread& t, u32 fn, const std::vector<GuestArg>& args);
+  // Puts the wallpaper behind every window: run in loginwindow once the
+  // session is ready (see wallpaper.cpp).
+  void draw_wallpaper(Thread& t);
   // The address of a function exported by a loaded guest library, or 0.
   u32 guest_symbol(const std::string& name);
   // Guest memory for cocaine's own use, never freed.

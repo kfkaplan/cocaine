@@ -527,6 +527,20 @@ void Process::share_display(u32 addr) {
       std::thread([this, fd = ends[0]] {
         s32 record[6];  // as the viewer writes them: see its `send`
         while (read(fd, record, sizeof record) == (ssize_t)sizeof record) {
+          if (record[0] == 0) {
+            // The viewer's window was closed: the run is over. The program
+            // started from the terminal is the session's root, named in the
+            // session's name; when it ends, the session server stops every
+            // daemon, this one included. Asked first, then made to.
+            int root = 0;
+            if (sscanf(opt_.session.c_str(), "cocaine.session.%d.", &root) == 1 && root > 0) {
+              log_info("the viewer's window was closed; ending the run");
+              kill(root, SIGTERM);
+              for (int i = 0; i < 30 && kill(root, 0) == 0; i++) usleep(100000);
+              if (kill(root, 0) == 0) kill(root, SIGKILL);
+            }
+            break;
+          }
           post_input_event((u32)record[0], record[1], record[2], (u32)record[3], (u32)record[4], record[5]);
         }
         close(fd);
@@ -877,6 +891,7 @@ u32 Process::guest_mach_msg(Thread& t, u32 msg, u32 option, u32 send_size, u32 r
       note.msgh_id = tunnel::kSessionReady;
       ::mach_msg(&note, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof note, 0, MACH_PORT_NULL, 2000,
                  MACH_PORT_NULL);
+      draw_wallpaper(t);
     }
     if (kr == KERN_SUCCESS && mem_.range_ok(rcv_buf, 24) && noted_message((s32)mem_.r32(rcv_buf + 20) - 100)) {
       const u32 got = mem_.r32(rcv_buf + 4);

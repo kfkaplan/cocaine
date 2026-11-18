@@ -1,0 +1,115 @@
+# Debugging, tests and layout
+
+Moved from the README on 2026-11-18.
+
+## Environment variables
+
+For looking into what the system daemons are doing there are a few
+environment variables, none of which change anything unless set:
+
+| Variable | What it does |
+|---|---|
+| `COCAINE_DAEMONS=all`, `none`, or labels | which of Apple's daemons the session may start, instead of the usual list |
+| `COCAINE_NO_VIEWER=1` | don't open the viewer window |
+| `COCAINE_DUMP=address:bytes:seconds:file` | write that guest memory (hexadecimal address) to `file.<pid>` after that long |
+| `COCAINE_SCRIPT="wait 20; click 300 400; key 28 56; shot /tmp/a.raw"` | play mouse and key actions into the guest's input system: `wait`, `move`, `down`, `up`, `dragto`, `click`, `drag`, `key`; `settle` and `change X Y W H` time how fast the window server and the display respond; `shot FILE` saves the display (see `run_input_script` in `src/kernel/iokit.cpp`) |
+| `COCAINE_POKE=x,y,seconds` | short for a script that, after that long, clicks at x,y and types 8 and 9 |
+| `COCAINE_NOTE_INPUT=1` | for three seconds after each click or key, log every message the window server sends and receives, with times |
+| `COCAINE_VIEWER_SNAPSHOT=file.png` | have the viewer save what its window shows, twelve seconds in |
+| `COCAINE_NOTE_MSG=number,first-last` | log every process that sends one of those Mach requests, and the answer it gets |
+| `COCAINE_CALLS=address,address` | log each call a PowerPC guest makes to one of those addresses, with its arguments |
+| `COCAINE_WATCH=address` | log each PowerPC store of a word to that address, and the code that made it |
+| `COCAINE_SESSION_TRACE=1` | log every request the session server receives, with its sender |
+| `COCAINE_JIT=0` | interpret guest code instead of translating it |
+| `COCAINE_JIT_STATS=1` | on exit, say how much was translated and which instructions were left to the interpreter |
+| `COCAINE_FAULT_MEM=r6:160,@2eebd0:16` | when a PowerPC guest crashes, also print memory at those registers or addresses (the crash report always names the library each caller is in) |
+| `COCAINE_NAN=1` | report the first places a PowerPC guest's floating point arithmetic makes a NaN out of numbers, with the inputs (interpreted, so slow) |
+| `COCAINE_GL_FRAME=n:file` | save OpenGL frame n, as cocaine read it back from the Mac's GPU, to `file` (raw, A R G B, bottom row first) |
+| `COCAINE_GL_FPS=60` | the most frames a second an OpenGL game is shown at (60 unless set, as vertical sync held games to on a Mac of the time; 0 for no limit) |
+| `COCAINE_DISPLAY=1280x1024` | the guest display's size (2560 x 1600 unless told otherwise; the tests use 1280 x 1024) |
+| `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the guest's menu bar instead of cocaine's (a pile of powder, drawn in each logo's colour into a copy of Leopard's art file, `.cocaine/art/` in the system root; see `src/session/art.cpp`) |
+| `COCAINE_UI_SCALE=1` | how many times bigger Leopard draws everything (2 on a display 2560 or more wide, else 1) |
+| `COCAINE_AUDIO_DUMP=file` | also write everything the guest plays to `file`, as raw 44.1 kHz stereo 32-bit floats |
+| `COCAINE_FAULT_CODE=1` | when an Intel guest crashes, also print the code around the instruction and the native backtrace |
+| `COCAINE_JIT_VERIFY=1` | run each translated Intel SSE instruction through the interpreter too, and report any difference |
+| `COCAINE_JIT_POISON=1` | report any read of flags the Intel translator decided nobody reads |
+| `COCAINE_JIT_SKIP=70,62` | leave those Intel SSE instructions (by second opcode byte) to the interpreter |
+| `COCAINE_JIT_FLAGS=0` | Intel translator: work out every instruction's flags, skip none, fuse no compare with its branch (3 is the usual) |
+| `COCAINE_JIT_WRITABLE=0` | Intel translator: interpret code in writable memory instead of translating it |
+| `COCAINE_JIT_MATHS=0` | have the Intel translator leave floating point and vector instructions to the interpreter, as it did at first |
+
+## Tests
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+Each test in `tests/guest/` is built as a guest program and as a reference,
+and the emulated program must print exactly what the reference prints, bit
+for bit. Each is run twice, translated and interpreted, and each way must
+match. A second, quick test checks every ARM64 instruction the translators
+can emit against the system's assembler
+(`tests/a64-check.sh`). There are three kinds of reference:
+
+- Plain C tests (`t_int`, `t_fp`, `t_fma`, `t_signal`) are built natively for
+  this Mac. `t_signal` interrupts a long calculation with a timer's signals
+  and checks that the result comes out the same.
+- The Intel-only tests (`t_x87`, `t_sse`) are built for 64-bit Intel and run
+  under Rosetta, which has a real x87 and SSE to compare against. They are
+  skipped if Rosetta isn't installed.
+- No current Mac has AltiVec, so `t_altivec` writes every operation twice:
+  the real instruction for PowerPC, and a plain C model of the documented
+  behaviour for the reference.
+
+If a system root has been imported, the tests also run real Mac OS X programs
+from it on both CPUs and check their output. That includes a shell script
+(`tests/guest/procs.sh`) that exercises processes, pipes and signals, Python
+programs that use threads and fork from them, and `t_ipc`: two processes
+exchanging Mach messages with port rights and out-of-line memory in them.
+Three of Apple's daemons are tested through their clients: the guest system
+must know the person running the tests by name, and one program must hear a
+notification that another posts (`tests/guest/notify.sh`). And Calculator is
+run on both CPUs. It must come up in front with Apple's window server
+behind it and be handed a key typed some seconds in (which takes the window
+server, the font server, the login window and the whole input path). If the
+keys for the Intel system programs aren't there, the Intel one must instead
+get as far as it can: through Launch Services to asking for the window
+server.
+
+The built guest programs live in `tests/bin/`, so running the tests needs
+nothing extra. Rebuilding them after an edit needs Homebrew LLVM for the
+PowerPC half: `sh tests/build-guest.sh`.
+
+## Source layout
+
+```
+src/main.cpp        command line tool
+src/macho/          Mach-O parser
+src/mem/            the 4 GB guest address space
+src/cpu/ppc/        PowerPC: the interpreter, AltiVec, and the translator to ARM64
+                    (ppc_jit.cpp, with its instruction encoder in a64.h)
+src/cpu/x86/        32-bit Intel: the interpreter, x87 (with its 80-bit maths), MMX
+                    and SSE, and the translator to ARM64 (x86_jit.cpp)
+src/kernel/         the fake kernel: process loading, BSD system calls, sysctl,
+                    Mach ports and messages, the comm page, path translation,
+                    getattrlist, sockets, threads, processes, signals, IOKit
+                    and its input system, decrypting protected programs, and
+                    taking over guest library functions (hooks.cpp)
+src/session/        the session server, cocaine's stand-in for launchd
+src/viewer/         the window that shows the guest system's display
+src/gl/, src/al/    OpenGL and OpenAL for guests, done by the Mac's own
+src/audio/          Core Audio's hardware layer and output units for guests, played
+                    through the Mac's own output
+tools/              import-sysroot.sh; find-mig-stub.py, for working out the
+                    private message protocols of system daemons; and
+                    ppc-dis.py, a small PowerPC disassembler for reading
+                    Apple's PowerPC code
+tests/guest/        test programs and their tiny runtime
+tests/tools/        elf2macho.py, a small linker for PowerPC test programs, and
+                    a64-check.cpp, which checks the translators' ARM64 encodings
+docs/               screenshots of firsts
+tests/bin/          the built guest test programs
+tests/bench/        a maths benchmark for the Intel translator, and how to build and time it
+tests/bin-dynamic/  ones linked against the real libSystem (need a system root to run)
+sysroots/           imported Mac OS X system roots (not in git)
+```

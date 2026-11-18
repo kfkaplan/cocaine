@@ -19,6 +19,7 @@
 #include "kernel/process.h"
 #include "kernel/protect.h"
 #include "session/session.h"
+#include "session/art.h"
 
 #include <libproc.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -318,6 +319,7 @@ static void set_guest_pref(const std::string& path, CFStringRef key, CFPropertyL
 }
 
 void Server::configure_window_server() {
+  prepare_menu_logo(sysroot_);
   // Leopard's hidden "resolution independence": apps draw everything this
   // many times bigger, so a display with twice the pixels each way shows
   // things at the size they were, only sharper. COCAINE_UI_SCALE overrides.
@@ -593,6 +595,11 @@ void Server::launch(Job& job) {
   // A daemon has no terminal. What it prints goes to the session's log.
   posix_spawn_file_actions_t actions;
   posix_spawn_file_actions_init(&actions);
+  // And it starts in the guest's "/", as launchd starts daemons, not in the
+  // folder cocaine was run from: a daemon or a helper it starts that writes
+  // to a relative path (Launch Services' lssave, saving a database it found
+  // no home for, writes "~") would otherwise leave files there.
+  posix_spawn_file_actions_addchdir_np(&actions, sysroot_.c_str());
   if (line[1] >= 0) posix_spawn_file_actions_adddup2(&actions, line[1], 3);
   posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
   posix_spawn_file_actions_addopen(&actions, 1, log_path_.c_str(), O_WRONLY | O_CREAT | O_APPEND,

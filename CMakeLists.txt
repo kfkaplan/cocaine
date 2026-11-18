@@ -34,12 +34,14 @@ add_executable(cocaine
   src/kernel/ipc.cpp
   src/kernel/iokit.cpp
   src/session/session.cpp
+  src/session/art.cpp
   src/viewer/viewer.mm
   src/kernel/threads.cpp
   src/kernel/processes.cpp
   src/kernel/signals.cpp
   src/kernel/protect.cpp
   src/kernel/hooks.cpp
+  src/kernel/wallpaper.cpp
   src/gl/gl.cpp
   src/al/al.cpp
   src/audio/coreaudio.cpp
@@ -62,7 +64,7 @@ set_source_files_properties(
   PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-frounding-math")
 
 set_source_files_properties(src/viewer/viewer.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-target_link_libraries(cocaine PRIVATE "-framework CoreFoundation" "-framework Cocoa" "-framework QuartzCore" "-framework OpenGL" "-framework OpenAL" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio")
+target_link_libraries(cocaine PRIVATE "-framework CoreFoundation" "-framework Cocoa" "-framework QuartzCore" "-framework CoreGraphics" "-framework ImageIO" "-framework OpenGL" "-framework OpenAL" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio")
 
 enable_testing()
 # The ARM64 instruction encodings the PowerPC translator emits, against the

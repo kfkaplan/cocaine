@@ -184,6 +184,10 @@ int run_viewer(const char* path) {
                                                       object:window
                                                        queue:nil
                                                   usingBlock:^(NSNotification* note) {
+                                                    // Closing the window ends the whole run:
+                                                    // say so (kind 0) before going.
+                                                    const int32_t closed[6] = {0, 0, 0, 0, 0, 0};
+                                                    (void)write(STDOUT_FILENO, closed, sizeof closed);
                                                     [NSApp terminate:nil];
                                                   }];
     // Twice a screen's usual refresh rate; a tick with nothing new costs nothing.
