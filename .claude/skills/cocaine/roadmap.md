@@ -110,8 +110,8 @@ Moved from the README on 2026-11-18. Each step, what was done and what was learn
    The mouse: clicks and movement in the viewer go back down a pipe and
    are put into the input system's event queue (`post_input_event`), the
    way the kernel's own input system would. Posting was tested by clicking
-   Calculator's "7" at a fixed spot (`docs/first-click.png`: the readout
-   says 7). Keys posted the same way went nowhere, and finding out why took
+   Calculator's "7" at a fixed spot: the readout
+   said 7. Keys posted the same way went nowhere, and finding out why took
    four separate discoveries, each from reading the window server's own
    code (Apple left the names in):
 
@@ -138,12 +138,11 @@ Moved from the README on 2026-11-18. Each step, what was done and what was learn
      took the helper for an app. It now follows parentage.
 
    With those, Calculator comes up as the app in front, draws its own menu
-   bar, and takes typing (`docs/first-keys.png`: a click on 7, then 8 and 9
+   bar, and takes typing (a click on 7, then 8 and 9
    from the keyboard). The window server, the font server and the login
    window are on call by default for PowerPC programs, so there is nothing
    to set. VLC 0.9.10's PowerPC build was the first other app tried, and it
-   came up as it was: menu bar, player window, and a first-run question
-   (`docs/first-vlc.png`).
+   came up as it was: menu bar, player window, and a first-run question.
 
    Then two things found by using it. Clicks landed sixteen pixels to the
    left of where they were aimed, which mostly showed on small targets (a
@@ -172,8 +171,8 @@ Moved from the README on 2026-11-18. Each step, what was done and what was learn
    (`src/kernel/protect.cpp`) when it is given the keys. With them, the
    Intel Calculator came up on the Intel window server at the first try,
    mouse, keyboard and all: the Intel layout of the input queue, until then
-   only read off the code, was right. The Intel build of VLC 0.9.10 followed
-   (`docs/first-intel-vlc.png`), its windows up about 14 seconds after
+   only read off the code, was right. The Intel build of VLC 0.9.10 followed,
+   its windows up about 14 seconds after
    starting it at the time, when Intel code was still interpreted (4.8 s
    since it has been translated).
 
