@@ -21,6 +21,9 @@ struct CocaineApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    Task { @MainActor in await LauncherUpdate.checkAndOffer() }
+  }
   func applicationWillTerminate(_ notification: Notification) { RunningCommand.stopAll() }
 }
 
