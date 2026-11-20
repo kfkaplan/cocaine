@@ -92,7 +92,7 @@ struct LogView: View {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 1) {
           ForEach(Array(log.lines.enumerated()), id: \.offset) { item in
-            Text(item.element)
+            Text(item.element.isEmpty ? " " : item.element)
               .font(.system(.caption, design: .monospaced))
               .frame(maxWidth: .infinity, alignment: .leading)
               .textSelection(.enabled)

@@ -206,18 +206,47 @@ final class AppModel: ObservableObject {
   private func perform(_ what: String, _ steps: () async -> Bool) async {
     guard busy == nil else { return }
     busy = what
-    installLog.add("— \(what) —")
-    let ok = await steps()
-    installLog.add(ok ? "Done." : "Stopped: something went wrong (see above).")
+    installLog.startSection()
+    installLog.add("\(what)...")
+    stepsShown = 0
+    if await steps() {
+      installLog.add("")
+      installLog.add("Complete...")
+    }
     busy = nil
     refresh()
   }
 
-  private func step(_ tool: String, _ args: [String], in dir: String? = nil) async -> Bool {
-    installLog.add("$ \(([tool] + args).joined(separator: " "))")
+  /// How many steps the current job has shown, for the blank line between them.
+  private var stepsShown = 0
+
+  /// Runs one step of a job. With a label (the git steps), the label is shown
+  /// in place of the command, then a blank line, then git's output, with a
+  /// blank line between what it fetched and what it says about it. Without
+  /// one, the command itself is shown, with no prompt.
+  private func step(_ tool: String, _ args: [String], in dir: String? = nil, label: String? = nil) async -> Bool {
+    if stepsShown > 0 { installLog.add("") }
+    stepsShown += 1
     let log = installLog
-    let status = await RunningCommand(tool, args, in: dir).run { log.add($0) }
-    if status != 0 { installLog.add("(exit status \(status))") }
+    let status: Int32
+    if let label {
+      installLog.add(label)
+      installLog.add("")
+      let split = FetchSplitter()
+      status = await RunningCommand(tool, args, in: dir).run { line in
+        if split.needsBlank(before: line) { log.add("") }
+        log.add(line == "Already up to date." ? "Already up to date..." : line)
+      }
+    } else {
+      installLog.add(([(tool as NSString).lastPathComponent] + args).joined(separator: " "))
+      status = await RunningCommand(tool, args, in: dir).run { line in
+        log.add(line == "ninja: no work to do." ? "ninja: no work to do" : line)
+      }
+    }
+    if status != 0 {
+      installLog.add("")
+      installLog.add("Stopped - exit status \(status)...")
+    }
     return status == 0
   }
 
@@ -236,7 +265,7 @@ final class AppModel: ObservableObject {
     await perform("Downloading and building cocaine") {
       let parent = (checkoutPath as NSString).deletingLastPathComponent
       try? FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
-      guard await step("git", ["clone", Self.repository, checkoutPath]) else { return false }
+      guard await step("git", ["clone", Self.repository, checkoutPath], label: Self.gettingSource) else { return false }
       return await buildSteps()
     }
   }
@@ -263,7 +292,7 @@ final class AppModel: ObservableObject {
   /// Fetches what's new and rebuilds.
   func update() async {
     await perform("Updating cocaine") {
-      guard await step("git", ["pull", "--ff-only"], in: checkoutPath) else { return false }
+      guard await step("git", ["pull", "--ff-only"], in: checkoutPath, label: Self.gettingSource) else { return false }
       behind = 0
       return await buildSteps()
     }
@@ -275,6 +304,8 @@ final class AppModel: ObservableObject {
       await step("/bin/sh", ["tools/import-sysroot.sh", image.path, sysrootPath], in: checkoutPath)
     }
   }
+
+  private static let gettingSource = "Getting source from the GH repo..."
 
   // MARK: Keys
 
@@ -320,23 +351,45 @@ final class AppModel: ObservableObject {
     remember(target)
     runLog.clear()
     let args = mode.arguments + [target.path]
-    runLog.add("$ cocaine \(args.joined(separator: " "))")
+    runLog.add("cocaine \(args.joined(separator: " "))")
     running = true
+    stopPressed = false
     let command = RunningCommand(binaryPath, args, environment: ["COCAINE_SYSROOT": sysrootPath])
     runCommand = command
     let log = runLog
     let status = await command.run { log.add($0) }
-    runLog.add(status == 0 ? "— finished —" : "— ended (status \(status)) —")
+    runLog.add("")
+    runLog.add(stopPressed ? "Stopped..." : status == 0 ? "Complete..." : "Ended - exit status \(status)...")
     running = false
     runCommand = nil
   }
 
-  func stop() { runCommand?.stop() }
+  private var stopPressed = false
+
+  func stop() {
+    stopPressed = true
+    runCommand?.stop()
+  }
 
   /// The Run screen has no recent list. This only puts the last program back
   /// next time the app opens. The key stays "recents" so a list saved by an
   /// older build still restores its first entry.
   private func remember(_ url: URL) {
     UserDefaults.standard.set([url.path], forKey: "recents")
+  }
+}
+
+/// Tells where git's fetch report ("From ..." and the indented ref lines
+/// under it) ends, so a blank line can go between it and the rest.
+private final class FetchSplitter: @unchecked Sendable {
+  private var inFetch = false
+
+  func needsBlank(before line: String) -> Bool {
+    if line.hasPrefix("From ") || (inFetch && line.hasPrefix(" ")) {
+      inFetch = true
+      return false
+    }
+    defer { inFetch = false }
+    return inFetch
   }
 }

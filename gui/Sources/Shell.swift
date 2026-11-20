@@ -79,6 +79,15 @@ final class LogBuffer: ObservableObject, @unchecked Sendable {
     if lines.count > limit { lines.removeFirst(lines.count - limit) }
   }
 
+  /// A blank line, if there's anything above, to set a new job apart.
+  /// Called on the main thread.
+  func startSection() {
+    lock.lock()
+    let hasAny = !pending.isEmpty || !lines.isEmpty
+    lock.unlock()
+    if hasAny { add("") }
+  }
+
   func clear() {
     lock.lock()
     pending.removeAll()
