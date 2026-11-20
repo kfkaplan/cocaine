@@ -7,6 +7,7 @@
 
 #include <fcntl.h>
 #include <mach/mach.h>
+#include <poll.h>
 #include <sys/event.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
@@ -111,6 +112,8 @@ const char* bsd_name(u32 n) {
     case 399: return "close_nocancel";
     case 406: return "fcntl_nocancel";
     case 414: return "pread_nocancel";
+    case 230: return "poll";
+    case 417: return "poll_nocancel";
     default: return "?";
   }
 }
@@ -931,6 +934,33 @@ SysRet Process::bsd_syscall(Thread& t, u32 num, SysArgs& a) {
       break;
     }
 
+    case 230:
+    case 417: {  // poll(descriptors, count, timeout in ms)
+      // Each entry is a 32-bit descriptor, then the 16-bit events asked
+      // about and those that happened, in the guest's byte order; the event
+      // bits are the same as this Mac's.
+      const u32 fds = a.u(), nfds = a.u();
+      const int ms = a.i();
+      if (nfds > 4096 || (nfds && !mem_.range_ok(fds, 8ull * nfds))) {
+        r = SysRet::err(nfds > 4096 ? EINVAL : EFAULT);
+        break;
+      }
+      std::vector<struct pollfd> host(nfds);
+      for (u32 k = 0; k < nfds; k++) {
+        host[k].fd = (s32)mem_.r32(fds + 8 * k);
+        host[k].events = (s16)mem_.r16(fds + 8 * k + 4);
+        host[k].revents = 0;
+      }
+      const int n = poll(host.data(), (nfds_t)nfds, ms);
+      if (n < 0) {
+        r = SysRet::err(errno);
+        break;
+      }
+      for (u32 k = 0; k < nfds; k++) mem_.w16(fds + 8 * k + 6, (u16)host[k].revents);
+      r = SysRet::ok((u32)n);
+      break;
+    }
+
     // ---- sockets ----
     case 27: case 28: case 29: case 30: case 31: case 32: case 97: case 98: case 104: case 105:
     case 106: case 118: case 133: case 134: case 135: case 401: case 402: case 403: case 404:
@@ -1327,7 +1357,11 @@ SysRet Process::bsd_syscall(Thread& t, u32 num, SysArgs& a) {
         const u32 e = events + 20 * (u32)k;
         mem_.w32(e, (u32)out[k].ident);
         mem_.w16(e + 4, (u16)out[k].filter);
-        mem_.w16(e + 6, out[k].flags);
+        // A change that failed comes back flagged EV_ERROR alone, as Leopard
+        // had it; this Mac keeps the change's own flags too, and libevent
+        // (Transmission's) takes any other answer to its test of a bad
+        // descriptor for a broken kqueue and falls back to poll.
+        mem_.w16(e + 6, (out[k].flags & EV_ERROR) ? (u16)EV_ERROR : out[k].flags);
         mem_.w32(e + 8, out[k].fflags);
         mem_.w32(e + 12, (u32)out[k].data);
         mem_.w32(e + 16, (u32)(uintptr_t)out[k].udata);

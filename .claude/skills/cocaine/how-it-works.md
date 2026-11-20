@@ -70,7 +70,12 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   libraries:
   - BSD system calls. The host is Darwin too, so most map onto the same host
     call after translating the calling convention, structure layouts and (for
-    PowerPC) byte order.
+    PowerPC) byte order. Where today's kernel answers differently, cocaine
+    answers as Leopard's did: `kevent` reports a failed change with flags
+    `EV_ERROR` alone, where this Mac keeps the change's own flags too, and
+    libevent (in Transmission) took the difference for a broken kqueue and
+    fell back to `poll`, which cocaine didn't have yet; it hung before
+    showing a window.
   - Mach traps and messages. Most kernel services on Mac OS X are messages to
     kernel ports; cocaine keeps its own port table and answers the messages
     programs really send.
