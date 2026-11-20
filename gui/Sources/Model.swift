@@ -143,15 +143,13 @@ final class AppModel: ObservableObject {
   @Published private(set) var targetArchitectures: Architectures = []
   @Published var mode: RunMode = .auto
   @Published private(set) var running = false
-  @Published private(set) var recents: [String]
   private var runCommand: RunningCommand?
 
   init() {
     let defaults = UserDefaults.standard
     checkoutPath = defaults.string(forKey: "checkoutPath") ?? Self.enclosingCheckout() ?? Self.defaultCheckout
     sysrootChoice = defaults.string(forKey: "sysrootPath") ?? ""
-    recents = defaults.stringArray(forKey: "recents") ?? []
-    if let last = recents.first, FileManager.default.fileExists(atPath: last) {
+    if let last = defaults.stringArray(forKey: "recents")?.first, FileManager.default.fileExists(atPath: last) {
       target = URL(fileURLWithPath: last)
       targetArchitectures = Architectures.of(URL(fileURLWithPath: last))
     }
@@ -335,10 +333,10 @@ final class AppModel: ObservableObject {
 
   func stop() { runCommand?.stop() }
 
+  /// The Run screen has no recent list. This only puts the last program back
+  /// next time the app opens. The key stays "recents" so a list saved by an
+  /// older build still restores its first entry.
   private func remember(_ url: URL) {
-    recents.removeAll { $0 == url.path }
-    recents.insert(url.path, at: 0)
-    if recents.count > 8 { recents.removeLast(recents.count - 8) }
-    UserDefaults.standard.set(recents, forKey: "recents")
+    UserDefaults.standard.set([url.path], forKey: "recents")
   }
 }

@@ -1,9 +1,9 @@
-# cocaine
+<h1 align="center">cocaine</h1>
 
-Runs old Mac programs on Apple Silicon Macs: PowerPC apps (the kind Rosetta 1
-used to run) and 32-bit Intel apps (the kind macOS dropped in Catalina).
+Runs old Mac programs on Apple Silicon Macs - PowerPC apps - the kind Rosetta 1
+used to run - and 32 bit Intel apps (the kind macOS dropped in Catalina)
 
-It isn't a virtual machine, and there's no old system to boot. cocaine loads
+IT IS NOT a virtual machine, and there's no old system to boot... Cocaine loads
 the program into an ordinary Mac process, translates its old CPU's code to
 ARM64 as it goes, runs Apple's own Mac OS X 10.5 Leopard libraries and system
 daemons alongside it, and answers their requests to the old kernel itself.
@@ -13,39 +13,39 @@ The guest system's screen appears in a window on your Mac.
 
 ## What works
 
-- **Apps with windows, on both CPUs.** Calculator, VLC 0.9.10 and others run
+- **Apps with windows, on both CPUs -** Calculator, VLC 0.9.10 and others run
   on Leopard's own window server, with the mouse, keyboard and scroll wheel.
   The display is drawn at twice the pixels, so it looks sharp on a Retina
   screen.
-- **Games.** Marble Blast Gold (both halves of the universal build) plays at
+- **Games -** Marble Blast Gold (both halves of the universal build) plays at
   60 frames a second with music and sound. OpenGL and OpenAL calls go to your
   Mac's own graphics and sound.
-- **Sound.** VLC plays MP3s through your Mac's speakers.
-- **Command line tools, shells and scripting languages** from Leopard:
+- **Sound -** VLC plays MP3s through your Mac's speakers.
+- **Command line tools, shells and scripting languages -** from Leopard -
   `ls`, `bash`, `zsh`, Python 2.5, Perl, Ruby and the rest.
 
-Closing the cocaine window ends the run.
+Closing the cocaine window ends the run
 
-## The Cocaine app
+## The cocaine app
 
 [Cocaine.app](https://github.com/sawyerthemiller/cocaine/releases) does the
-setting up and running for you, in three tabs:
+setting up and running for you, in three tabs
 
-- **Install**: downloads cocaine from GitHub and builds it, checks for
+- **Install -** downloads cocaine from GitHub and builds it, checks for
   updates and rebuilds, and imports Leopard from your install DVD image.
-- **Keys**: takes the two SMC keys for Intel apps and keeps them in the
+- **Keys -** takes the two SMC keys for Intel apps and keeps them in the
   system root, readable only by you.
-- **Run**: pick an old app (or drop one on it), choose Auto, PowerPC or
-  Intel, and run it. Closing its window, or Stop, ends it.
+- **Run -** pick an old app or drop one on it, choose Auto, PowerPC or
+  Intel, and run it. Closing its window, or pressing stop, ends it.
 
-It isn't signed by a registered developer, so the first time, Control-click
-it and choose Open (or run `xattr -dr com.apple.quarantine Cocaine.app`).
-It still needs the build tools below. Build it yourself with `gui/build.sh`.
+It isn't signed by a registered developer, so the first time, control-click it and choose open (or run `xattr -dr com.apple.quarantine Cocaine.app`) 
+
+It still needs the build tools below. You can build it yourself with `gui/build.sh`.
 
 ## What you need
 
 - An Apple Silicon Mac with Xcode's command line tools, CMake and Ninja.
-- A **Mac OS X 10.5 Leopard** retail install DVD image. It's universal, so it
+- A **Mac OS X 10.5 Leopard** retail install DVD image. It is universal, so it
   covers PowerPC and Intel at once.
 - For **Intel apps with windows**, the two keys from an Intel Mac's SMC
   chip. Apple shipped a few of the Intel system's own programs encrypted,
@@ -56,7 +56,10 @@ It still needs the build tools below. Build it yourself with `gui/build.sh`.
   PowerPC half unless you ask for `--arch i386`.
 - The programs to run. None come with this repository.
 
-## Build and run
+## Building and running
+
+<details>
+<summary>Build and import Leopard</summary>
 
 ```bash
 cmake -S . -B build -G Ninja
@@ -64,8 +67,14 @@ cmake --build build
 sh tools/import-sysroot.sh /path/to/leopard-install-dvd.iso
 ```
 
-The importer unpacks Leopard into `sysroots/10.5` (about 3.7 GB, ignored by
-Git). Then:
+</details>
+
+The importer unpacks Leopard into `sysroots/10.5`
+
+Then -
+
+<details>
+<summary>Run a program</summary>
 
 ```bash
 export COCAINE_SYSROOT=$PWD/sysroots/10.5
@@ -75,9 +84,14 @@ export COCAINE_SYSROOT=$PWD/sysroots/10.5
 ./build/cocaine sysroots/10.5/bin/ls -la /
 ```
 
+</details>
+
 A window titled "cocaine: Mac OS X 10.5" opens after a few seconds, once
 Leopard's window server and login window have started. To run an app from a
 disk image, open the image on your Mac and copy the `.app` out.
+
+<details>
+<summary>Environment variables</summary>
 
 A few settings, as environment variables:
 
@@ -86,42 +100,51 @@ A few settings, as environment variables:
 | `COCAINE_DISPLAY=1280x1024` | the guest's screen size (2560 x 1600 by default) |
 | `COCAINE_UI_SCALE=1` | how many times bigger Leopard draws everything (2 by default on a big screen) |
 | `COCAINE_GL_FPS=0` | lift the 60 frames a second cap on games |
-| `COCAINE_WALLPAPER=/path/to/picture.jpg` | the desktop picture, a JPEG or PNG (`images/linen.jpeg` by default; `none` for Leopard's plain grey) |
+| `COCAINE_WALLPAPER=/path/to/picture.jpg` | the desktop picture, a JPEG or PNG (`images/linen.jpeg` by default - `none` for Leopard's plain grey) |
 | `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the menu bar instead of cocaine's |
 | `COCAINE_NO_VIEWER=1` | run without the window |
+
+</details>
 
 `cocaine --help` lists the command line options.
 
 ## Tests
 
+<details>
+<summary>Run the tests</summary>
+
 ```bash
 ctest --test-dir build --output-on-failure
 ```
 
+</details>
+
 Each test program runs translated and interpreted, and must match a
-reference bit for bit; with a system root imported, real Leopard programs
+reference bit for bit, with a system root imported, real Leopard programs
 and apps are tested on both CPUs too.
 
 ## Not yet
 
 - QuickTime, and video in VLC.
-- The Dock and Finder: apps can't yet start other apps.
+- The Dock and Finder - apps can't yet start other apps.
 - Copy and paste between apps.
-- `ps` and `top`.
+- The tools `ps` and `top`.
 - Only one window for the whole guest screen.
 
-## Under the hood
+<details>
+<summary>Under the hood</summary>
 
-The design, the history, every debugging switch and the full list of gaps
-are in [.claude/skills/cocaine/](.claude/skills/cocaine/SKILL.md).
+The design, the history, every debugging switch and the full list of gaps are in [.claude/skills/cocaine/](.claude/skills/cocaine/SKILL.md)
 
 ```
-src/cpu/        the PowerPC and Intel translators and interpreters
-src/kernel/     the stand-in kernel: system calls, Mach messages, IOKit, signals, paths
-src/session/    the stand-in for launchd, which starts Leopard's daemons
-src/viewer/     the window showing the guest's screen
-src/gl/ src/al/ src/audio/   OpenGL, OpenAL and Core Audio, done by your Mac's own
-tools/          the system root importer, and tools for reading Apple's code
-gui/            Cocaine.app, the launcher (SwiftUI; gui/build.sh)
-tests/          test programs and the suite
+src/cpu/          the PowerPC and Intel translators and interpreters
+src/kernel/       the stand-in kernel: system calls, Mach messages, IOKit, signals, paths
+src/session/      the stand-in for launchd, which starts Leopard's daemons
+src/viewer/       the window showing the guest's screen
+src/gl/ src/al/   src/audio/   OpenGL, OpenAL and Core Audio, done by your Mac's own
+tools/            the system root importer, and tools for reading Apple's code
+gui/              cocaine.app, the launcher (SwiftUI - gui/build.sh)
+tests/            test programs and the suite
 ```
+
+</details>

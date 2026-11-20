@@ -95,9 +95,11 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   to learn which daemon provides which service, hands out service ports, and
   starts Apple's real daemon behind a port, as a guest, when the first
   message arrives for it. Only daemons known to work are on call (`notifyd`,
-  `DirectoryService`, `dirhelper`, `securityd`, `coreservicesd`, and
+  `DirectoryService`, `dirhelper`, `securityd`, `coreservicesd`, `configd`
+  (without its plug-ins, `-b`, and in the foreground, `-d`), and
   `WindowServer`, `ATSServer` and `loginwindow`, the last three for Intel
-  programs only where the keys to them have been supplied);
+  programs only where the keys to them have been supplied). Each starts in
+  the guest's `/`, as launchd starts daemons;
   `COCAINE_DAEMONS=all`, or a
   comma-separated list of job labels, tries others. Daemons are told they are
   root, and their messages are stamped as root's, because both they and
@@ -107,6 +109,14 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   holds what the server did, what the daemons printed, and everything any
   guest sent to `syslog`, which is often the only place a daemon explains
   itself.
+- **The desktop and the menu bar.** The Dock, which draws Leopard's desktop
+  picture, can't be started (apps can't start other apps yet), so cocaine
+  draws one itself from inside loginwindow once the session is ready: a
+  desktop-level window that ignores the mouse, with `COCAINE_WALLPAPER` (or
+  `images/linen.jpeg`) drawn to fill it (`src/kernel/wallpaper.cpp`). The
+  Apple menu's logo is swapped for a pile of powder in a copy of CoreUI's art
+  file that guests are shown instead of Apple's (`src/session/art.cpp`).
+  Closing the viewer window ends the whole run. SKILL.md has the details.
 - **Windows.** The window server is Apple's, run as a guest like the other
   daemons. A real Mac has it up, and a login session set up by `loginwindow`,
   long before any app starts, and apps depend on that order: one that

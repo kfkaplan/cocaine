@@ -99,4 +99,12 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
 - The importer skips files that are hard links to other files (manual pages
   and a few tools such as `/bin/ln`), because this folder doesn't allow
   creating hard links.
-
+- Guests can't launch other apps through Launch Services: loginwindow's
+  `LSOpenApplication` calls fail with -10827, so there is no Dock, Finder or
+  SystemUIServer (on hold, by the user's choice, 2026-11-19). The desktop
+  picture the Dock would draw is drawn by cocaine instead.
+- Launch Services can't save the user's copy of its database: its `lssave`
+  helper can't work out the user's cache folder (the lookup is in
+  CarbonCore, not yet understood), so it writes to an empty path plus `~`,
+  which lands in the system root as `sysroots/10.5/~`. Harmless: the
+  database is built again in memory on each run.

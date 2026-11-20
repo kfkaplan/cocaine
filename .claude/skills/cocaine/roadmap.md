@@ -178,18 +178,21 @@ Moved from the README on 2026-11-18. Each step, what was done and what was learn
 
    Later in this step: bridge the window server to real macOS windows, plus
    events, fonts and the pasteboard.
-6. **Under way.** Audio, OpenGL and QuickTime. VLC plays a video.
+6. **Done for games and music; video on hold.** Audio, OpenGL and
+   QuickTime. VLC playing video and QuickTime are on hold (the user,
+   2026-11-19): VLC was only a test app for windows and sound.
 
    OpenGL and OpenAL came first, for games: both are taken over and done
    by the Mac's own libraries ("Games: OpenGL and OpenAL" above). Marble
    Blast Gold was the first game to try; it crashed on a camera matrix
    full of leftover stack, which led back to OpenGL doing nothing at all
    as guest code. With both passed through it plays, sound and all
-   (`docs/first-marbleblast.png`). Still to do: full screen, the same for
-   Intel games (whose arguments come on the stack), and QuickTime.
+   (`docs/first-marbleblast.png`). The Intel half of the universal build
+   plays too, the handlers reading arguments from the stack. Still to do:
+   full screen, and QuickTime.
 
-   Core Audio's hardware layer came next ("Sound" above), and Intel VLC
-   plays music through it. Getting there found three bugs that weren't
+   Core Audio's hardware layer came next ("Sound" above), and VLC plays
+   music through it, both builds. Getting there found three bugs that weren't
    about sound: the interpreter's `lock` instructions weren't atomic
    against plain stores ("Atomic instructions"); two threads mapping memory
    at once could be given the same range, because finding a free range and
@@ -240,4 +243,16 @@ Moved from the README on 2026-11-18. Each step, what was done and what was learn
    instructions, which video will lean on; and keeping the SSE registers
    in the Mac's own between instructions, where now each instruction
    loads and stores them.
-
+8. **Done.** Polish, 2026-11-18 and 19.
+   - The Apple menu crashed, in SystemConfiguration, because `configd`
+     wasn't running; it now runs as a guest, which needed a startup
+     deadlock with DirectoryService broken (SKILL.md, "Daemons").
+   - Closing the viewer window ends the run.
+   - The menu bar's Apple logo is a pile of powder, and the desktop has a
+     picture (SKILL.md, "The menu bar logo" and "The wallpaper").
+   - Daemons start in the guest's `/`: Launch Services' `lssave` was leaving
+     a file named `~` wherever cocaine was run from.
+   - Cocaine.app, a launcher with Install, Keys and Run tabs, released as
+     `gui-v1.0` on GitHub (SKILL.md, "Cocaine.app").
+   On hold, by the user's choice: the Dock and Finder (apps launching other
+   apps through Launch Services) and VLC playing video.

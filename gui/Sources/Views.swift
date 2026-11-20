@@ -144,11 +144,11 @@ struct InstallView: View {
             }
           }
           StatusRow(title: "Build tools",
-                    detail: model.missingTools.isEmpty ? "Xcode tools, git, CMake and Ninja" :
-                      "Missing: " + model.missingTools.joined(separator: ", "),
+                    detail: model.missingTools.isEmpty ? "Xcode command line tools, git, cmake and ninja" :
+                      "missing: " + model.missingTools.joined(separator: ", "),
                     state: model.missingTools.isEmpty ? .good : .bad)
           StatusRow(title: "Source",
-                    detail: model.hasCheckout ? "\(model.branch ?? "?") at \(short(model.head))" : "Not downloaded",
+                    detail: model.hasCheckout ? "\(model.branch ?? "?") at \(short(model.head))" : "not downloaded",
                     state: model.hasCheckout ? .good : .bad)
           StatusRow(title: "Updates", detail: updateText, state: updateState)
           StatusRow(title: "Build", detail: buildText, state: buildState)
@@ -181,10 +181,10 @@ struct InstallView: View {
             }
           }
           StatusRow(title: "System root",
-                    detail: model.sysrootReady ? "Ready" : "Not imported yet",
+                    detail: model.sysrootReady ? "ready" : "not imported yet",
                     state: model.sysrootReady ? .good : .bad)
           HStack {
-            Button(model.sysrootReady ? "Import Again from Disc Image…" : "Import from Disc Image…") {
+            Button(model.sysrootReady ? "Import again from Disc Image…" : "Import from Disc Image…") {
               let types = ["iso", "dmg", "cdr", "toast", "img"].compactMap { UTType(filenameExtension: $0) } + [.diskImage]
               if let image = choosePath(directory: false, types: types,
                                         message: "Choose a Mac OS X 10.5 Leopard install DVD image") {
@@ -192,7 +192,7 @@ struct InstallView: View {
               }
             }
             .disabled(!model.hasCheckout || model.busy != nil)
-            Text("A retail Leopard install DVD image (universal, about 7 GB). Unpacks about 3.7 GB.")
+            Text("A retail Leopard install DVD image - universal, about 7 GB - unpacks about 3.7 GB...")
               .font(.caption).foregroundStyle(.secondary)
           }
         }
@@ -217,20 +217,20 @@ struct InstallView: View {
 
   private var updateText: String {
     guard model.hasCheckout else { return "—" }
-    if model.checkFailed { return "Couldn't reach GitHub" }
-    guard let behind = model.behind else { return "Not checked yet" }
-    return behind == 0 ? "Up to date" : "\(behind) new commit\(behind == 1 ? "" : "s") on GitHub"
+    if model.checkFailed { return "could not reach GitHub" }
+    guard let behind = model.behind else { return "not checked yet" }
+    return behind == 0 ? "up to date" : "\(behind) new commit\(behind == 1 ? "" : "s") on GitHub"
   }
   private var updateState: StatusRow.State {
     guard model.hasCheckout, !model.checkFailed, let behind = model.behind else { return model.checkFailed ? .warn : .unknown }
     return behind == 0 ? .good : .warn
   }
   private var buildText: String {
-    guard model.isBuilt else { return "Not built" }
+    guard model.isBuilt else { return "not built" }
     guard let built = model.builtCommit else {
-      return model.buildIsCurrent ? "Built, newer than the source" : "Built, older than the source"
+      return model.buildIsCurrent ? "built, newer than the source" : "built, older than the source"
     }
-    return model.buildIsCurrent ? "Built from \(short(built))" : "Built from \(short(built)): older than the source"
+    return model.buildIsCurrent ? "built from \(short(built))" : "built from \(short(built)) - older than the source"
   }
   private var buildState: StatusRow.State {
     guard model.isBuilt else { return .bad }
@@ -251,9 +251,9 @@ struct KeysView: View {
     Form {
       Section {
         StatusRow(title: "Keys",
-                  detail: model.keysInstalled ? "In place" : "Not set",
+                  detail: model.keysInstalled ? "in place" : "not set",
                   state: model.keysInstalled ? .good : .warn)
-        Text("Intel apps with windows need the two keys from an Intel Mac's SMC chip: Apple shipped a few of Leopard's own Intel programs encrypted, and the kernel decrypted them with these. PowerPC apps don't need them. They're saved in the system root, readable only by you, and never shown again or sent anywhere.")
+        Text("Intel apps with windows need the two keys from an Intel Mac's SMC chip - Apple shipped a few of Leopard's own Intel programs encrypted, and the kernel decrypted them with these. PowerPC apps don't need them. They're saved in the system root, readable only by you, and never shown again or sent anywhere.")
           .font(.callout).foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -297,11 +297,6 @@ struct KeysView: View {
           Text(message).font(.callout).foregroundStyle(failed ? .red : .green)
         }
       }
-      Section {
-        LabeledContent("Kept in") {
-          Text(model.keysFile).lineLimit(1).truncationMode(.middle).foregroundStyle(.secondary).textSelection(.enabled)
-        }
-      }
     }
     .formStyle(.grouped)
     .onAppear { model.refresh() }
@@ -337,13 +332,6 @@ struct RunView: View {
               Text("Choose an app, or drop one here").foregroundStyle(.secondary)
             }
             Spacer()
-            Menu("Recent") {
-              ForEach(model.recents, id: \.self) { path in
-                Button((path as NSString).lastPathComponent) { model.target = URL(fileURLWithPath: path) }
-              }
-            }
-            .fixedSize()
-            .disabled(model.recents.isEmpty)
             Button("Choose…") {
               if let url = choosePath(directory: false, types: [.application, .unixExecutable, .item],
                                       message: "Choose an old PowerPC or Intel Mac app") {
@@ -406,26 +394,26 @@ struct RunView: View {
   }
 
   private var readiness: String {
-    if !model.isBuilt { return "cocaine isn't built yet: see the Install tab." }
-    if !model.sysrootReady { return "Import Leopard's system root first: see the Install tab." }
+    if !model.isBuilt { return "Cocaine isn't built yet - see the install tab." }
+    if !model.sysrootReady { return "Import Leopard's system root first - see the install tab." }
     return "Output"
   }
 
   private var modeNote: String? {
     let archs = model.targetArchitectures
     guard model.target != nil else { return nil }
-    if archs.isEmpty || archs == .modern { return "That doesn't look like a PowerPC or 32-bit Intel program." }
+    if archs.isEmpty || archs == .modern { return "That doesn't look like a PowerPC or 32-bit Intel program..." }
     switch model.mode {
     case .auto:
       if !archs.contains(.powerpc) && archs.contains(.intel) && !model.keysInstalled {
-        return "Intel only: apps with windows need the keys (Keys tab)."
+        return "Intel only - apps with windows need the keys (keys tab)."
       }
       return nil
     case .powerpc:
-      return archs.contains(.powerpc) ? nil : "This program has no PowerPC code."
+      return archs.contains(.powerpc) ? nil : "This program has no PowerPC code..."
     case .intel:
-      if !archs.contains(.intel) { return "This program has no 32-bit Intel code." }
-      return model.keysInstalled ? nil : "Intel apps with windows need the keys (Keys tab)."
+      if !archs.contains(.intel) { return "This program has no 32-bit Intel code..." }
+      return model.keysInstalled ? nil : "Intel apps with windows need the keys (keys tab)."
     }
   }
 }

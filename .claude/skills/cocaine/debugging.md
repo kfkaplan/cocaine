@@ -20,6 +20,7 @@ environment variables, none of which change anything unless set:
 | `COCAINE_CALLS=address,address` | log each call a PowerPC guest makes to one of those addresses, with its arguments |
 | `COCAINE_WATCH=address` | log each PowerPC store of a word to that address, and the code that made it |
 | `COCAINE_SESSION_TRACE=1` | log every request the session server receives, with its sender |
+| `COCAINE_DAEMON_STRACE=1` | pass `--strace` to every daemon the session starts; their system calls land, interleaved, in the session log |
 | `COCAINE_JIT=0` | interpret guest code instead of translating it |
 | `COCAINE_JIT_STATS=1` | on exit, say how much was translated and which instructions were left to the interpreter |
 | `COCAINE_FAULT_MEM=r6:160,@2eebd0:16` | when a PowerPC guest crashes, also print memory at those registers or addresses (the crash report always names the library each caller is in) |
@@ -27,6 +28,7 @@ environment variables, none of which change anything unless set:
 | `COCAINE_GL_FRAME=n:file` | save OpenGL frame n, as cocaine read it back from the Mac's GPU, to `file` (raw, A R G B, bottom row first) |
 | `COCAINE_GL_FPS=60` | the most frames a second an OpenGL game is shown at (60 unless set, as vertical sync held games to on a Mac of the time; 0 for no limit) |
 | `COCAINE_DISPLAY=1280x1024` | the guest display's size (2560 x 1600 unless told otherwise; the tests use 1280 x 1024) |
+| `COCAINE_WALLPAPER=path` | the guest's desktop picture, a JPEG or PNG on this Mac (`images/linen.jpeg` by default, else Leopard's `DefaultDesktop.jpg`); `none` leaves the window server's plain grey (see `src/kernel/wallpaper.cpp`) |
 | `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the guest's menu bar instead of cocaine's (a pile of powder, drawn in each logo's colour into a copy of Leopard's art file, `.cocaine/art/` in the system root; see `src/session/art.cpp`) |
 | `COCAINE_UI_SCALE=1` | how many times bigger Leopard draws everything (2 on a display 2560 or more wide, else 1) |
 | `COCAINE_AUDIO_DUMP=file` | also write everything the guest plays to `file`, as raw 44.1 kHz stereo 32-bit floats |

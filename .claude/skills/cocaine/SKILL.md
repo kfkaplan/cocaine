@@ -196,6 +196,16 @@ makes `gui/build/Cocaine.zip` for a release. Releases are tagged `gui-vX.Y`
   (an app's main program from its bundle) for the Run tab's mode checks.
 - `Views.swift`: the tabs. Run is blocked only when the program has no code
   for the chosen CPU; a missing key only warns (command line Intel programs
-  don't need it).
+  don't need it). The Run tab has no recent list: only the last program is
+  remembered, for the next launch, under the UserDefaults key `recents` (a
+  one-item array, so lists saved by 1.0 still restore their first entry).
+  The Keys tab doesn't show where the keys are kept.
+- Wording: the user rewrote the app's text on 2026-11-19 in their own style
+  (lowercase status words such as "ready", "not built", "up to date"; dashes
+  rather than colons, as in "built from abc1234 - older than the source").
+  Keep new text in that style, and keep the README's own style too
+  (dash-led bullets, collapsible `<details>` sections).
+- A copy opened from a checkout's `gui/build/` uses that checkout unless one
+  was chosen (`AppModel.enclosingCheckout`).
 - To test the logic without clicking, compile `Shell.swift` and `Model.swift`
   with a small `main.swift` that drives `AppModel` (with made-up keys only).
