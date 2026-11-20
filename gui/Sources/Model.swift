@@ -366,6 +366,28 @@ final class AppModel: ObservableObject {
 
   private var stopPressed = false
 
+  /// Ends every cocaine process on this Mac, not just the one started here:
+  /// a run left over from the terminal, its daemons, a stuck viewer. Asks
+  /// them to stop, then makes sure of any still there three seconds later.
+  /// Matches the process name exactly, so this app (Cocaine) is left alone.
+  func killAll() async {
+    let found = Shell.capture("/usr/bin/pgrep", ["-x", "cocaine"]).output
+      .split(separator: "\n").count
+    runLog.add("")
+    guard found > 0 else {
+      runLog.add("No cocaine processes running...")
+      return
+    }
+    runLog.add("Killing \(found) cocaine process\(found == 1 ? "" : "es")...")
+    stopPressed = running
+    Shell.capture("/usr/bin/pkill", ["-x", "cocaine"])
+    try? await Task.sleep(nanoseconds: 3_000_000_000)
+    if Shell.capture("/usr/bin/pgrep", ["-x", "cocaine"]).status == 0 {
+      Shell.capture("/usr/bin/pkill", ["-9", "-x", "cocaine"])
+    }
+    runLog.add("Killed all...")
+  }
+
   func stop() {
     stopPressed = true
     runCommand?.stop()

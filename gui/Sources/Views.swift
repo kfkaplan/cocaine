@@ -368,10 +368,12 @@ struct RunView: View {
           ProgressView().controlSize(.small)
           Text("Running. Closing its window ends it too.")
           Spacer()
+          Button("Kill All") { Task { await model.killAll() } }
           Button("Stop") { model.stop() }
         } else {
           Text(readiness).foregroundStyle(model.isReady ? .secondary : Color.orange)
           Spacer()
+          Button("Kill All") { Task { await model.killAll() } }
           Button("Run") { Task { await model.run() } }
             .keyboardShortcut(.defaultAction)
             .disabled(!canRun)
