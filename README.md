@@ -26,6 +26,22 @@ The guest system's screen appears in a window on your Mac.
 
 Closing the cocaine window ends the run.
 
+## The Cocaine app
+
+[Cocaine.app](https://github.com/sawyerthemiller/cocaine/releases) does the
+setting up and running for you, in three tabs:
+
+- **Install**: downloads cocaine from GitHub and builds it, checks for
+  updates and rebuilds, and imports Leopard from your install DVD image.
+- **Keys**: takes the two SMC keys for Intel apps and keeps them in the
+  system root, readable only by you.
+- **Run**: pick an old app (or drop one on it), choose Auto, PowerPC or
+  Intel, and run it. Closing its window, or Stop, ends it.
+
+It isn't signed by a registered developer, so the first time, Control-click
+it and choose Open (or run `xattr -dr com.apple.quarantine Cocaine.app`).
+It still needs the build tools below. Build it yourself with `gui/build.sh`.
+
 ## What you need
 
 - An Apple Silicon Mac with Xcode's command line tools, CMake and Ninja.
@@ -106,5 +122,6 @@ src/session/    the stand-in for launchd, which starts Leopard's daemons
 src/viewer/     the window showing the guest's screen
 src/gl/ src/al/ src/audio/   OpenGL, OpenAL and Core Audio, done by your Mac's own
 tools/          the system root importer, and tools for reading Apple's code
+gui/            Cocaine.app, the launcher (SwiftUI; gui/build.sh)
 tests/          test programs and the suite
 ```

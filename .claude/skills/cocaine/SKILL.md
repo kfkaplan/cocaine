@@ -169,3 +169,33 @@ its path is empty plus the `~` of its safe-save copy. It now lands in
 CarbonCore) is still unexplained. To catch a guest writing a stray file, log
 in `Process::host_path` when the path matches, with `getpid()` and
 `exe_path_`, and call `dump_registers` for the callers.
+
+## Cocaine.app, the launcher (gui/)
+
+A SwiftUI app built without Xcode: `gui/build.sh` compiles `gui/Sources/*.swift`
+with `swiftc -swift-version 5 -target arm64-apple-macos14.0`, assembles the
+bundle with `gui/Info.plist`, draws the icon (the powder pile, light on a dark
+tile) with `gui/make-icon.swift` + `iconutil`, and signs ad hoc; `--zip`
+makes `gui/build/Cocaine.zip` for a release. Releases are tagged `gui-vX.Y`
+(`gh release create gui-v1.0 gui/build/Cocaine.zip`); bump
+`CFBundleShortVersionString` with each.
+
+- `Shell.swift`: the tool search path (a Finder-launched app has a bare
+  PATH), quick commands, `RunningCommand` (streams output line by line,
+  stopped on quit), `LogBuffer` (thread-safe, shown on the main thread).
+- `Model.swift`: `AppModel` keeps the checkout path (default
+  `~/Library/Application Support/Cocaine/cocaine`) and system root (default
+  `<checkout>/sysroots/10.5`) in UserDefaults. "Built" means
+  `build/cocaine` exists; the commit it was built from is written to
+  `build/.built-commit` after each build through the app, so a hand-built
+  checkout shows "unknown commit". Updates: `git fetch`, then
+  `git rev-list --count HEAD..@{u}`; update is `git pull --ff-only` (fails on
+  local changes, by design). Keys are validated (32 printable ASCII each),
+  written as 64 bytes to `<sysroot>/.cocaine/osk` with mode 600, removed to
+  the Trash, never logged. `Architectures.of` reads the Mach-O or fat header
+  (an app's main program from its bundle) for the Run tab's mode checks.
+- `Views.swift`: the tabs. Run is blocked only when the program has no code
+  for the chosen CPU; a missing key only warns (command line Intel programs
+  don't need it).
+- To test the logic without clicking, compile `Shell.swift` and `Model.swift`
+  with a small `main.swift` that drives `AppModel` (with made-up keys only).
