@@ -496,7 +496,7 @@ void Process::share_display(u32 addr) {
   close(fd);
   if (map == MAP_FAILED) return;
   const DisplayFileHeader head = {kDisplayFileMagic, kWidth, kHeight, mem_.big_endian() ? 1u : 0u,
-                                  (u32)getpid(), 0, {}};
+                                  (u32)getpid(), 0, 0, 0};
   memcpy(map, &head, sizeof head);
   display_w_ = kWidth;
   display_h_ = kHeight;

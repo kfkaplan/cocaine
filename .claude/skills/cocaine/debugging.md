@@ -31,6 +31,8 @@ environment variables, none of which change anything unless set:
 | `COCAINE_WALLPAPER=path` | the guest's desktop picture, a JPEG or PNG on this Mac (`images/linen.jpeg` by default, else Leopard's `DefaultDesktop.jpg`); `none` leaves the window server's plain grey (see `src/kernel/wallpaper.cpp`) |
 | `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the guest's menu bar instead of cocaine's (a pile of powder, drawn in each logo's colour into a copy of Leopard's art file, `.cocaine/art/` in the system root; see `src/session/art.cpp`) |
 | `COCAINE_UI_SCALE=1` | how many times bigger Leopard draws everything (2 on a display 2560 or more wide, else 1) |
+| `COCAINE_AL_DUMP=dir` | write each buffer of sound a game hands OpenAL to `dir`, one raw file each, 16-bit samples in this Mac's byte order, named by order, buffer, format and rate (see `src/al/al.cpp`) |
+| `COCAINE_AL_TRACE=1` | log each OpenAL call that leaves an error, and the source, listener and buffer-name calls with their arguments |
 | `COCAINE_AUDIO_DUMP=file` | also write everything the guest plays to `file`, as raw 44.1 kHz stereo 32-bit floats |
 | `COCAINE_FAULT_CODE=1` | when an Intel guest crashes, also print the code around the instruction and the native backtrace |
 | `COCAINE_JIT_VERIFY=1` | run each translated Intel SSE instruction through the interpreter too, and report any difference |

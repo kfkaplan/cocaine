@@ -28,6 +28,10 @@
   const volatile uint32_t* frame;  // the file's count of pictures
   uint32_t shown;                  // the count when the layer was last given one
   double scrollX, scrollY;         // scrolling not yet amounting to a whole line
+  const volatile uint32_t* held;   // when the guest last held the pointer (DisplayFileHeader)
+  bool holding;                    // the Mac's pointer is hidden and kept still for it
+  bool skipMove;                   // the next movement includes putting the pointer back
+  double moveX, moveY;             // movement not yet amounting to a whole point
 }
 - (void)show;
 @end
@@ -93,6 +97,21 @@
     }
   } else if (kind >= 1 && kind <= 4) {
     more = (int32_t)event.clickCount;  // 2 for the second click of a double click
+  } else if (kind >= 5 && kind <= 7) {
+    // How far the mouse moved, as this Mac measured it, in points (a Mac of
+    // 2007 had one pixel to each), fractions saved up. A game holding the
+    // pointer (see -tick:) goes by this alone, down being positive.
+    if (skipMove) {
+      skipMove = false;
+    } else {
+      moveX += event.deltaX;
+      moveY += event.deltaY;
+    }
+    key = (int32_t)moveX;
+    extra = (int32_t)moveY;
+    moveX -= key;
+    moveY -= extra;
+    more = 1;
   } else if (kind == 22) {
     // Whole lines, down then across; a trackpad's fine movement is saved up.
     const BOOL fine = event.hasPreciseScrollingDeltas;
@@ -119,8 +138,31 @@
 - (void)mouseDragged:(NSEvent*)event { [self send:6 event:event]; }
 - (void)rightMouseDragged:(NSEvent*)event { [self send:7 event:event]; }
 - (void)scrollWheel:(NSEvent*)event { [self send:22 event:event]; }
+// While a program in the guest holds the pointer, as a game looking around
+// with the mouse does, the Mac's pointer is hidden and kept still in the
+// middle of the window, so it can't wander off and click another app; the
+// mouse's movement still comes through. It comes back once the guest has
+// let go for a second and a half, or this app isn't the one in front.
+- (void)hold:(bool)hold {
+  if (hold == holding) return;
+  holding = hold;
+  if (hold) {
+    const NSRect r = [self.window convertRectToScreen:[self convertRect:self.bounds toView:nil]];
+    const CGFloat top = NSScreen.screens.count ? NSMaxY(NSScreen.screens[0].frame) : 0;
+    CGWarpMouseCursorPosition(CGPointMake(NSMidX(r), top - NSMidY(r)));
+    CGAssociateMouseAndMouseCursorPosition(false);
+    [NSCursor hide];
+    skipMove = true;
+  } else {
+    CGAssociateMouseAndMouseCursorPosition(true);
+    [NSCursor unhide];
+  }
+}
 - (void)tick:(NSTimer*)timer {
   if (*frame != shown) [self show];
+  const uint32_t at = __atomic_load_n(held, __ATOMIC_ACQUIRE);
+  const uint32_t now = (uint32_t)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000000);
+  [self hold:at != 0 && now - at < 1500 && NSApp.isActive && self.window.isKeyWindow];
   static int ticks;
   if (++ticks % 60 == 0 && kill(writer, 0) != 0) [NSApp terminate:nil];  // the guest system has gone
 }
@@ -169,6 +211,7 @@ int run_viewer(const char* path) {
     view->bigEndian = head->big_endian != 0;
     view->writer = (pid_t)head->writer;
     view->frame = &head->frame;
+    view->held = &head->pointer_held;
     view.layer = [CALayer layer];  // a layer of the view's own, which AppKit then leaves alone
     view.wantsLayer = YES;
     view.layer.contentsGravity = kCAGravityResize;

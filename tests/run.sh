@@ -27,6 +27,14 @@ have_rosetta=no
 arch -x86_64 /usr/bin/true 2>/dev/null && have_rosetta=yes
 
 # reference <test> <kind>: builds the reference program for one test.
+# Some Macs run system tweaks that print a line or two from every program
+# started, the reference builds and cocaine alike, stamped with the time and
+# process number. They say nothing about the test, so they're left out.
+drop_noise() {
+  grep -a -v -E '\[(AppleSharpener|BlurTweak)\] ' "$1" > "$1.kept"
+  mv "$1.kept" "$1"
+}
+
 reference() {
   arch_flags=
   [ "$2" = rosetta ] && arch_flags="-arch x86_64 -msse3"
@@ -51,6 +59,7 @@ for entry in hello:native t_int:native t_fp:native t_fma:native t_altivec:native
   fi
   COCAINE_TEST=yes "$work/$test.host" alpha "two words" 3 >"$work/$test.expected" 2>&1
   expected_status=$?
+  drop_noise "$work/$test.expected"
 
   for bin in "$here"/bin/*/"$test" "$here"/bin/*/"$test"_*; do
     [ -f "$bin" ] || continue
@@ -64,6 +73,7 @@ for entry in hello:native t_int:native t_fp:native t_fma:native t_altivec:native
       [ "$way" = interpreted ] && jit=0
       COCAINE_JIT=$jit COCAINE_TEST=yes "$cocaine" "$bin" alpha "two words" 3 >"$actual" 2>&1
       status=$?
+      drop_noise "$actual"
       if [ "$status" -eq "$expected_status" ] && cmp -s "$work/$test.expected" "$actual"; then
         echo "ok    $name"
         pass=$((pass + 1))

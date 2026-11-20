@@ -329,11 +329,18 @@ class Process {
   u32 hid_element_ = 96;  // bytes per slot of the event ring
   u32 hid_event_number_ = 0;
   s32 hid_x_ = 0, hid_y_ = 0;  // where the pointer last was
+  // When the window server last put the pointer somewhere itself, and until
+  // when the pointer moves by the mouse's own movement from there rather than
+  // following the Mac's pointer (uptime in nanoseconds). See set_pointer.
+  u64 hid_last_warp_ = 0, hid_relative_until_ = 0;
   u32 hid_buttons_ = 0;        // the mouse buttons held, the left one in bit 0
   // For working on cocaine: until this time, every message this process
   // sends is noted, to see what the window server does with an input event.
   std::atomic<u64> note_sends_until_{0}, note_from_{0};
   std::mutex hid_mu_;
+  // The window server moving the pointer itself (CGWarpMouseCursorPosition
+  // and the like): where it is now, on the display.
+  void set_pointer(s32 x, s32 y);
   // Puts one input event (a type from the HID system's list, at a place on
   // the display, top-left origin) into the queue and tells the window server.
   // For a key, `key` is its Mac key code (unchanged since 10.5) and `extra`

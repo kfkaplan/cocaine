@@ -8,6 +8,7 @@
 // sleep and wake, and some treat failing to as fatal. Nothing is ever
 // announced: this machine, as far as the guest can tell, never sleeps.
 
+#include <algorithm>
 #include <mach/mach.h>
 
 #include <set>
@@ -18,6 +19,7 @@
 
 #include "kernel/mach_message.h"
 #include "kernel/process.h"
+#include "viewer/viewer.h"
 
 namespace {
 
@@ -384,6 +386,18 @@ u32 Process::io_method(const KPort& port, u32 selector, const std::vector<u64>& 
         }
         return KERN_SUCCESS;
       }
+      case 4: {  // the window server moving the pointer itself (IOHIDSetMouseLocation)
+        // Where to, as two 16-bit numbers in the guest's byte order, then
+        // the process asking.
+        if (bytes_in.size() >= 4) {
+          const bool be = mem_.big_endian();
+          auto half = [&](size_t at) {
+            return (s16)(be ? bytes_in[at] << 8 | bytes_in[at + 1] : bytes_in[at + 1] << 8 | bytes_in[at]);
+          };
+          set_pointer(half(0), half(2));
+        }
+        return KERN_SUCCESS;
+      }
       default:  // enabling events and the cursor, setting bounds and the like
         log_info("input system method %u (%zu numbers, %zu bytes in) accepted", selector, in.size(),
                  bytes_in.size());
@@ -532,8 +546,40 @@ void Process::run_input_script(const std::string& script) {
 // fills in the next free slot of the ring, moves the ring's marks along, and
 // sends the window server an empty message so that it looks.
 //
+// A game that looks around with the mouse hides the pointer and, after each
+// movement, puts it back in the middle of its window, reading how far the
+// mouse moved from the events. The Mac's pointer goes on wherever the user
+// moves it, so from the next movement on, the pointer would jump from the
+// middle straight back to it, which the game takes for one huge movement.
+// So, as the real kernel does, the pointer is kept where the window server
+// put it, and while it keeps doing so (or did, lately), each movement moves
+// the pointer that far from there instead of to where the Mac's pointer is.
+// The viewer, seeing the pointer held, hides the Mac's own and keeps it still.
+void Process::set_pointer(s32 x, s32 y) {
+  std::lock_guard<std::mutex> lk(hid_mu_);
+  const u64 now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+  hid_x_ = x;
+  hid_y_ = y;
+  hid_relative_until_ = now + 1500000000ull;
+  // Twice in half a second is a program holding the pointer, not putting it
+  // somewhere once (as the window server does when it starts).
+  if (display_file_ && hid_last_warp_ && now - hid_last_warp_ < 500000000ull) {
+    auto* head = (DisplayFileHeader*)display_file_;
+    __atomic_store_n(&head->pointer_held, std::max<u32>(1, (u32)(now / 1000000)), __ATOMIC_RELEASE);
+  }
+  hid_last_warp_ = now;
+  if (hid_memory_) {
+    const EvLayout& l = mem_.big_endian() ? kEvPowerPC : kEvIntel;
+    const u32 g = hid_memory_ + kEvGlobals;
+    mem_.w16(g + l.cursor, (u16)x);
+    mem_.w16(g + l.cursor + 2, (u16)y);
+  }
+}
+
 // `type` is the event's number as Mac OS X has it (above); x and y are where
-// the pointer is on the display. For a key, `key` is its key code, `extra`
+// the pointer is on the display. For a movement, `more` is 1 when `key` and
+// `extra` say how far the mouse moved, as the Mac measured it (from the
+// viewer; a script gives only where to, and the distance is worked out). For a key, `key` is its key code, `extra`
 // the modifier keys held (the top sixteen bits, as Mac OS X numbers them)
 // with the character below, and `more` is not zero for a key that is
 // repeating. For a mouse button, `more` is which click this is: 2 for the
@@ -548,8 +594,24 @@ void Process::post_input_event(u32 type, s32 x, s32 y, u32 key, u32 extra, s32 m
   }
   const EvLayout& l = mem_.big_endian() ? kEvPowerPC : kEvIntel;
   const u32 g = hid_memory_ + kEvGlobals;
+  const bool moved = type == kMoved || type == kLeftDragged || type == kRightDragged;
+  const bool held = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) < hid_relative_until_;
+  s32 dx = 0, dy = 0;
+  if (moved) {
+    dx = more == 1 ? (s32)key : x - hid_x_;
+    dy = more == 1 ? (s32)extra : y - hid_y_;
+    if (held) {  // from where the window server put the pointer (see set_pointer)
+      u32 w = 0, h = 0;
+      guest_display_size(w, h);
+      x = std::clamp(hid_x_ + dx, 0, (s32)w - 1);
+      y = std::clamp(hid_y_ + dy, 0, (s32)h - 1);
+    }
+  } else if (held && type != kKeyDown && type != kKeyUp && type != kModifiersChanged) {
+    x = hid_x_;  // a button or the wheel, where the guest's pointer is
+    y = hid_y_;
+  }
   const u32 head = mem_.r32(g + l.head), tail = mem_.r32(g + l.tail);
-  if ((type == kMoved || type == kLeftDragged || type == kRightDragged) && head != tail) {
+  if (moved && head != tail) {
     // The pointer moved again before the window server read about the last
     // move. As the real kernel does, the event still waiting is brought up
     // to date rather than another queued behind it: a reader that falls
@@ -563,8 +625,8 @@ void Process::post_input_event(u32 type, s32 x, s32 y, u32 key, u32 extra, s32 m
       const bool same = mem_.r32(waiting + 8) == type;
       if (same) {
         const u32 at = waiting + 8 + l.details;
-        mem_.w32(at, mem_.r32(at) + (u32)(x - hid_x_));
-        mem_.w32(at + 4, mem_.r32(at + 4) + (u32)(y - hid_y_));
+        mem_.w32(at, mem_.r32(at) + (u32)dx);
+        mem_.w32(at + 4, mem_.r32(at + 4) + (u32)dy);
         mem_.w32(waiting + 8 + 4, (u32)x);
         mem_.w32(waiting + 8 + 8, (u32)y);
         mem_.w64(waiting + 8 + 12, clock_gettime_nsec_np(CLOCK_UPTIME_RAW));
@@ -621,8 +683,8 @@ void Process::post_input_event(u32 type, s32 x, s32 y, u32 key, u32 extra, s32 m
     case kMoved:
     case kLeftDragged:
     case kRightDragged:  // how far it moved
-      mem_.w32(details, (u32)(x - hid_x_));
-      mem_.w32(details + 4, (u32)(y - hid_y_));
+      mem_.w32(details, (u32)dx);
+      mem_.w32(details + 4, (u32)dy);
       break;
     case kScrollWheel:  // lines; the window server works the finer measures out from these
       mem_.w16(details, (u16)(s16)(s32)key);

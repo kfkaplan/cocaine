@@ -10,7 +10,12 @@ struct DisplayFileHeader {
   uint32_t big_endian;  // the pixels are in a PowerPC guest's byte order
   uint32_t writer;      // the process keeping the picture up to date
   uint32_t frame;       // goes up each time the picture in the file changes
-  uint32_t reserved[2];
+  // When a program in the guest last held the pointer, putting it back in
+  // place again and again as a game looking around with the mouse does: the
+  // time since startup in milliseconds (CLOCK_UPTIME_RAW), 0 if never. While
+  // that's recent the viewer hides the Mac's pointer and keeps it still.
+  uint32_t pointer_held;
+  uint32_t reserved;
 };
 
 // Shows the display in that file in a window, until the window is closed or

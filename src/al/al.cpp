@@ -12,7 +12,10 @@
 #include <OpenAL/al.h>
 #include <OpenAL/alc.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -24,6 +27,8 @@
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
 namespace {
+
+const bool g_trace = getenv("COCAINE_AL_TRACE") != nullptr;
 
 // Whether the guest is big-endian (PowerPC); Intel guests need no swapping.
 bool g_big = true;
@@ -148,8 +153,16 @@ ALenum take_error() {
 }
 
 void alGetError_(GuestCall& c) { c.ret((u32)take_error()); }
-void alEnable_(GuestCall& c) { alEnable((ALenum)c.i()); }
-void alDistanceModel_(GuestCall& c) { alDistanceModel((ALenum)c.i()); }
+void alEnable_(GuestCall& c) {
+  const ALenum p = (ALenum)c.i();
+  if (g_trace) log_info("OpenAL: alEnable(0x%x)", (unsigned)p);
+  alEnable(p);
+}
+void alDistanceModel_(GuestCall& c) {
+  const ALenum p = (ALenum)c.i();
+  if (g_trace) log_info("OpenAL: alDistanceModel(0x%x)", (unsigned)p);
+  alDistanceModel(p);
+}
 void alGetString_(GuestCall& c) {
   const ALenum p = (ALenum)c.i();
   static std::mutex mu;
@@ -179,6 +192,7 @@ void names_out(GuestCall& c, void (*gen)(ALsizei, ALuint*)) {
   std::vector<ALuint> v((size_t)n);
   gen(n, v.data());
   for (ALsizei k = 0; k < n; k++) wr32(out + 4 * k, v[(size_t)k]);
+  if (g_trace) for (ALuint name : v) log_info("OpenAL: made %u", name);
 }
 void names_in(GuestCall& c, void (*del)(ALsizei, const ALuint*)) {
   const ALsizei n = (ALsizei)c.i();
@@ -186,13 +200,60 @@ void names_in(GuestCall& c, void (*del)(ALsizei, const ALuint*)) {
   if (n <= 0 || !in) return;
   std::vector<ALuint> v((size_t)n);
   for (ALsizei k = 0; k < n; k++) v[(size_t)k] = rd32(in + 4 * k);
+  if (g_trace) for (ALuint name : v) log_info("OpenAL: deleting %u", name);
   del(n, v.data());
 }
 void alGenBuffers_(GuestCall& c) { names_out(c, alGenBuffers); }
 void alDeleteBuffers_(GuestCall& c) { names_in(c, alDeleteBuffers); }
 void alGenSources_(GuestCall& c) { names_out(c, alGenSources); }
 void alDeleteSources_(GuestCall& c) { names_in(c, alDeleteSources); }
-void alIsBuffer_(GuestCall& c) { c.ret(alIsBuffer(c.i())); }
+void alIsBuffer_(GuestCall& c) {
+  const ALuint b = c.i();
+  const ALboolean yes = alIsBuffer(b);
+  if (g_trace) log_info("OpenAL: alIsBuffer(%u) = %d", b, yes);
+  c.ret(yes);
+}
+
+// For working on cocaine: COCAINE_AL_DUMP=dir writes each buffer of sound
+// the guest hands OpenAL to dir, as the host gets it (16-bit samples in this
+// Mac's byte order), one file a buffer, named by order, buffer, format and rate.
+void dump_buffer(ALuint b, ALenum format, const void* data, ALsizei size, ALsizei freq) {
+  static const char* dir = getenv("COCAINE_AL_DUMP");
+  if (!dir) return;
+  static std::atomic<u32> n{0};
+  char path[1024];
+  snprintf(path, sizeof path, "%s/%05u-b%u-f%x-%d.raw", dir, (u32)n++, b, (u32)format, (int)freq);
+  if (FILE* f = fopen(path, "wb")) {
+    fwrite(data, 1, (size_t)size, f);
+    fclose(f);
+  }
+}
+
+// Which byte order an Intel guest's 16-bit samples come in. Leopard's own
+// OpenAL takes them in Intel's order, but the OpenAL games bundled for their
+// first universal builds kept PowerPC's: Marble Blast Gold's Intel copy still
+// declares 16-bit samples big-endian, and the game hands them over that way.
+// Sound changes smoothly from one sample to the next and the wrong reading of
+// it is noise, so whichever reading jumps about less is right. A buffer that
+// can't tell (near silence, or noise itself) goes by the last one that could.
+std::atomic<int> g_intel_order{0};  // 0 not known yet, 1 Intel's own, 2 swapped
+bool intel_samples_swapped(const u8* data, ALsizei size, ALenum format) {
+  const size_t step = format == AL_FORMAT_STEREO16 ? 2 : 1;  // the same channel's last sample
+  const size_t n = std::min<size_t>((size_t)size / 2, 16384);
+  u64 own = 0, swapped = 0;
+  for (size_t k = step; k < n; k++) {
+    const u8* a = data + 2 * k;
+    const u8* b = data + 2 * (k - step);
+    own += (u64)std::abs((int)(s16)(a[0] | a[1] << 8) - (int)(s16)(b[0] | b[1] << 8));
+    swapped += (u64)std::abs((int)(s16)(a[1] | a[0] << 8) - (int)(s16)(b[1] | b[0] << 8));
+  }
+  if (own * 2 < swapped) {
+    g_intel_order = 1;
+  } else if (swapped * 2 < own) {
+    if (g_intel_order.exchange(2) != 2) log_info("OpenAL: this game's 16-bit sound is big-endian; swapping it");
+  }
+  return g_intel_order == 2;
+}
 
 void alBufferData_(GuestCall& c) {
   const ALuint b = c.i();
@@ -205,15 +266,18 @@ void alBufferData_(GuestCall& c) {
     alBufferData(b, format, nullptr, 0, freq);
     return;
   }
-  if (g_big && (format == AL_FORMAT_MONO16 || format == AL_FORMAT_STEREO16)) {  // big-endian samples
+  const bool sixteen = format == AL_FORMAT_MONO16 || format == AL_FORMAT_STEREO16;
+  if (sixteen && (g_big || intel_samples_swapped(data, size, format))) {  // big-endian samples
     static thread_local std::vector<u8> swapped;
     swapped.resize((size_t)size);
     for (ALsizei k = 0; k + 1 < size; k += 2) {
       swapped[(size_t)k] = data[k + 1];
       swapped[(size_t)k + 1] = data[k];
     }
+    dump_buffer(b, format, swapped.data(), size, freq);
     alBufferData(b, format, swapped.data(), size, freq);
   } else {
+    dump_buffer(b, format, data, size, freq);
     alBufferData(b, format, data, size, freq);
   }
 }
@@ -238,20 +302,29 @@ void tally() {  // with -v, now and then: what the game has sent to the speakers
   }
 }
 void alSourcePlay_(GuestCall& c) {
-  alSourcePlay(c.i());
+  const ALuint s = c.i();
+  if (g_trace) log_info("OpenAL: alSourcePlay(%u)", s);
+  alSourcePlay(s);
   g_plays++;
   tally();
 }
-void alSourceStop_(GuestCall& c) { alSourceStop(c.i()); }
+void alSourceStop_(GuestCall& c) {
+  const ALuint s = c.i();
+  if (g_trace) log_info("OpenAL: alSourceStop(%u)", s);
+  alSourceStop(s);
+}
 void alSourcef_(GuestCall& c) {
   const ALuint s = c.i();
   const ALenum p = (ALenum)c.i();
-  alSourcef(s, p, c.f());
+  const float v = c.f();
+  if (g_trace) log_info("OpenAL: alSourcef(%u, 0x%x, %g)", s, (unsigned)p, v);
+  alSourcef(s, p, v);
 }
 void alSource3f_(GuestCall& c) {
   const ALuint s = c.i();
   const ALenum p = (ALenum)c.i();
   const float x = c.f(), y = c.f(), z = c.f();
+  if (g_trace) log_info("OpenAL: alSource3f(%u, 0x%x, %g %g %g)", s, (unsigned)p, x, y, z);
   alSource3f(s, p, x, y, z);
 }
 void alSourcefv_(GuestCall& c) {
@@ -260,12 +333,15 @@ void alSourcefv_(GuestCall& c) {
   const u8* in = gp(c, c.i());
   ALfloat v[6] = {};
   for (int k = 0; in && k < count_of(p); k++) v[k] = rdf(in + 4 * k);
+  if (g_trace) log_info("OpenAL: alSourcefv(%u, 0x%x, %g %g %g)", s, (unsigned)p, v[0], v[1], v[2]);
   alSourcefv(s, p, v);
 }
 void alSourcei_(GuestCall& c) {
   const ALuint s = c.i();
   const ALenum p = (ALenum)c.i();
-  alSourcei(s, p, (ALint)c.i());
+  const ALint v = (ALint)c.i();
+  if (g_trace) log_info("OpenAL: alSourcei(%u, 0x%x, %d)", s, (unsigned)p, v);
+  alSourcei(s, p, v);
 }
 void alGetSourcef_(GuestCall& c) {
   const ALuint s = c.i();
@@ -316,11 +392,14 @@ void alSourceUnqueueBuffers_(GuestCall& c) {
 
 void alListenerf_(GuestCall& c) {
   const ALenum p = (ALenum)c.i();
-  alListenerf(p, c.f());
+  const float v = c.f();
+  if (g_trace) log_info("OpenAL: alListenerf(0x%x, %g)", (unsigned)p, v);
+  alListenerf(p, v);
 }
 void alListener3f_(GuestCall& c) {
   const ALenum p = (ALenum)c.i();
   const float x = c.f(), y = c.f(), z = c.f();
+  if (g_trace) log_info("OpenAL: alListener3f(0x%x, %g %g %g)", (unsigned)p, x, y, z);
   alListener3f(p, x, y, z);
 }
 void alListenerfv_(GuestCall& c) {
@@ -328,6 +407,7 @@ void alListenerfv_(GuestCall& c) {
   const u8* in = gp(c, c.i());
   ALfloat v[6] = {};
   for (int k = 0; in && k < count_of(p); k++) v[k] = rdf(in + 4 * k);
+  if (g_trace) log_info("OpenAL: alListenerfv(0x%x, %g %g %g %g %g %g)", (unsigned)p, v[0], v[1], v[2], v[3], v[4], v[5]);
   alListenerfv(p, v);
 }
 void alGetListenerf_(GuestCall& c) {
@@ -356,7 +436,18 @@ void alGetListeneri_(GuestCall& c) {
   if (out) wr32(out, (u32)v);
 }
 
-#define H(name) {#name, name##_}
+// For working on cocaine: COCAINE_AL_TRACE=1 logs each call that leaves an
+// OpenAL error, and the source calls with their arguments.
+void after(const char* name) {
+  if (!g_trace) return;
+  const ALenum e = alGetError();
+  if (e == AL_NO_ERROR) return;
+  log_info("OpenAL: %s left error 0x%x", name, (unsigned)e);
+  ALenum none = AL_NO_ERROR;
+  g_pending_error.compare_exchange_strong(none, e);  // still the guest's to read
+}
+
+#define H(name) {#name, [](GuestCall& c) { name##_(c); after(#name); }}
 const HookSpec kAL[] = {
     H(alcOpenDevice), H(alcCloseDevice), H(alcCreateContext), H(alcMakeContextCurrent), H(alcGetCurrentContext),
     H(alcDestroyContext), H(alGetError), H(alEnable), H(alDistanceModel), H(alGetString), H(alGenBuffers),

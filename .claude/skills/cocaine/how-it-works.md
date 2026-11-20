@@ -147,7 +147,17 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   taking 145 ms to react and 15. Mouse and keys are written into the input system's
   shared event queue (`post_input_event` in `src/kernel/iokit.cpp`), where
   the window server finds them as it would on real hardware, and it decides
-  which app gets what.
+  which app gets what. The viewer sends the Mac's own measure of each
+  movement with it, in points (one to a pixel on a Mac of 2007), and that
+  is the movement the guest is told of, so a game turning its camera by the
+  mouse turns it as much as it did on a real Mac, not twice that at the
+  usual 2x display. When the window server moves the pointer itself
+  (`IOHIDSetMouseLocation`, input method 4: two 16-bit numbers and a
+  process id), the pointer stays there and, for a second and a half,
+  moves by the mouse's movement from there instead of following the Mac's
+  pointer, as on real hardware; a program doing that again and again (a
+  game that recentres a hidden pointer) has the viewer hide the Mac's
+  pointer and hold it still (`pointer_held` in the display file).
 - **Games: OpenGL and OpenAL.** Leopard's OpenGL drives graphics cards no
   Apple Silicon Mac has, and run as guest code it finds no renderer at all:
   every call quietly does nothing (Marble Blast crashed several calls
@@ -162,7 +172,11 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   those libraries that aren't done yet say so once and return 0. Byte
   order is the work: values in registers need nothing, but matrices,
   vertex and index arrays, glGet answers and 16-bit sound samples are
-  big-endian in guest memory and get swapped on the way through. Pixel
+  big-endian in guest memory and get swapped on the way through. Intel
+  games' 16-bit samples usually aren't, but the OpenAL that early universal
+  games bundled kept PowerPC's order on Intel too (Marble Blast Gold's
+  declares its input big-endian), so for Intel guests each buffer is read
+  both ways and whichever is smooth rather than noise wins. Pixel
   data needs no copy, because the host's swap-bytes pixel setting is kept
   the opposite of the guest's. Vertex arrays are noted when the guest
   points at them and converted at each draw. Each guest OpenGL context
