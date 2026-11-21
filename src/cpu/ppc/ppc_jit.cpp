@@ -786,13 +786,29 @@ class Translator : Emitter {
         vstore(vd, 0);
         return true;
       }
-      case 8:     // vmuloub
-      case 72: {  // vmulouh: the odd elements, guest-numbered, are the even ones in host order
-        const u32 size = xo == 8 ? 1 : 2;
+      case 8: case 72:       // vmuloub, vmulouh
+      case 264: case 328:    // vmulosb, vmulosh
+      case 520: case 584:    // vmuleub, vmuleuh
+      case 776: case 840: {  // vmulesb, vmulesh
+        // Each pair of elements is one element of twice the width here. The
+        // odd ones, guest-numbered, are its low half and the even ones its
+        // high half: widen the half wanted in place, and the product fits.
+        const u32 size = xo & 64 ? 2 : 1, half = 4u << size;
+        const bool is_signed = xo & 256, even = xo & 512;
         vload(0, va), vload(1, vb);
-        splat(size, 2, xo == 8 ? 0xFFu : 0xFFFFu);
-        e(andv(0, 0, 2));
-        e(andv(1, 1, 2));
+        for (int v = 0; v < 2; v++) {
+          if (even) {
+            e(is_signed ? sshrv(size, v, v, half) : ushrv(size, v, v, half));
+          } else if (is_signed) {
+            e(shlv(size, v, v, half));
+            e(sshrv(size, v, v, half));
+          }
+        }
+        if (!even && !is_signed) {
+          splat(size, 2, size == 1 ? 0xFFu : 0xFFFFu);
+          e(andv(0, 0, 2));
+          e(andv(1, 1, 2));
+        }
         e(mulv(size, 0, 0, 1));
         vstore(vd, 0);
         return true;

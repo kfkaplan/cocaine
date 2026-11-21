@@ -21,7 +21,10 @@ environment variables, none of which change anything unless set:
 | `COCAINE_WATCH=address` | log each PowerPC store of a word to that address, and the code that made it |
 | `COCAINE_SESSION_TRACE=1` | log every request the session server receives, with its sender |
 | `COCAINE_DAEMON_STRACE=1` | pass `--strace` to every daemon the session starts; their system calls land, interleaved, in the session log |
+| `COCAINE_TRACE_BYTES=n` | how many bytes of each Mach message `--strace` shows (48 unless set); more helps when working out a protocol |
+| `COCAINE_NOTE_PATCHES=file` | append a line to `file` each time CoreGraphics is mapped, saying how many of the display-size patches took |
 | `COCAINE_JIT=0` | interpret guest code instead of translating it |
+| `COCAINE_JIT_BARRIERS=1` | Intel translator: put a memory barrier after every guest instruction (an experiment in memory ordering; slow) |
 | `COCAINE_JIT_STATS=1` | on exit, say how much was translated and which instructions were left to the interpreter (AltiVec ones too: opcode 4 with the low 6 bits for the three-source forms, else the low 11); a number of seconds instead also reports then, for programs that don't end |
 | `COCAINE_FAULT_MEM=r6:160,@2eebd0:16` | when a PowerPC guest crashes, also print memory at those registers or addresses (the crash report always names the library each caller is in) |
 | `COCAINE_NAN=1` | report the first places a PowerPC guest's floating point arithmetic makes a NaN out of numbers, with the inputs (interpreted, so slow) |
