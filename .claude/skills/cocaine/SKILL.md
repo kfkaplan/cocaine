@@ -194,6 +194,19 @@ makes `gui/build/Cocaine.zip` for a release. Releases are tagged `gui-vX.Y`
   written as 64 bytes to `<sysroot>/.cocaine/osk` with mode 600, removed to
   the Trash, never logged. `Architectures.of` reads the Mach-O or fat header
   (an app's main program from its bundle) for the Run tab's mode checks.
+  `killAll` (the Run tab's Kill All, since 1.3) counts with `pgrep -x cocaine`,
+  sends `pkill -x cocaine`, and `-9` to any still there three seconds on; the
+  exact name leaves the launcher itself (Cocaine) alone. Log lines are plain
+  since 1.2: no `$` before commands, and status lines end in three dots
+  ("Updating cocaine...", "Getting source from the GH repo...", "Complete...").
+- `SelfUpdate.swift` (since 1.4): on every launch `LauncherUpdate` asks
+  GitHub for the releases, takes the highest `gui-vX.Y` tag with a zip, and
+  if it is newer than `CFBundleShortVersionString` asks ("An update to the
+  Cocaine launcher is now available." / "Do you want to do it?", Yes or No,
+  no off switch). Yes downloads and unpacks the zip and hands over to a
+  small script that waits for the app to quit, swaps the bundle and reopens
+  it. An older release is never offered, and GitHub being unreachable says
+  nothing. A release must carry a `.zip` asset or it is ignored.
 - `Views.swift`: the tabs. Run is blocked only when the program has no code
   for the chosen CPU; a missing key only warns (command line Intel programs
   don't need it). The Run tab has no recent list: only the last program is

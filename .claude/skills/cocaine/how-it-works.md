@@ -18,8 +18,8 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   difference. Blocks jump straight to each other once both exist; a
   return or a call through a pointer finds its block in a table without
   leaving translated code. AltiVec's common instructions (the float
-  arithmetic, permutes, merges, splats, loads and stores, conversions and
-  compares that Leopard's drawing lives on) become NEON: a vector register
+  arithmetic, permutes, merges, splats, loads and stores, conversions,
+  compares and the even and odd multiplies that Leopard's drawing lives on) become NEON: a vector register
   is kept byte-reversed, so loaded whole its elements are in reverse order,
   each in host byte order, and element-wise work is the same instruction;
   only what cares where an element sits is renumbered (`vperm` is a `TBL`

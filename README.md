@@ -13,7 +13,7 @@ The guest system's screen appears in a window on your Mac.
 
 ## What works
 
-- **Apps with windows, on both CPUs -** Calculator, VLC 0.9.10 and others run
+- **Apps with windows, on both CPUs -** Calculator, VLC 0.9.10, Transmission 1.54 and others run
   on Leopard's own window server, with the mouse, keyboard and scroll wheel.
   The display is drawn at twice the pixels, so it looks sharp on a Retina
   screen.
@@ -36,7 +36,10 @@ setting up and running for you, in three tabs
 - **Keys -** takes the two SMC keys for Intel apps and keeps them in the
   system root, readable only by you.
 - **Run -** pick an old app or drop one on it, choose Auto, PowerPC or
-  Intel, and run it. Closing its window, or pressing stop, ends it.
+  Intel, and run it. Closing its window, or pressing stop, ends it. Kill All
+  ends every cocaine process on your Mac.
+
+When it opens it checks GitHub for a newer version of itself and asks before updating
 
 It isn't signed by a registered developer, so the first time, control-click it and choose open (or run `xattr -dr com.apple.quarantine Cocaine.app`) 
 
@@ -126,6 +129,7 @@ and apps are tested on both CPUs too.
 ## Not yet
 
 - QuickTime, and video in VLC.
+- Open and save panels - they come up blank, and VLC's Browse button crashes.
 - The Dock and Finder - apps can't yet start other apps.
 - Copy and paste between apps.
 - The tools `ps` and `top`.

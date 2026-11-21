@@ -27,6 +27,15 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
 - Leopard's 2x drawing was never finished: Carbon programs that don't ask
   for it, Marble Blast among them, are drawn at 1x and enlarged, which looks
   as it did before, only bigger.
+- A default button's blue pulse stutters at the usual 2560 x 1600: measured
+  on 2026-11-20 in VLC's Open Source dialog (PowerPC), the button gets a
+  new picture about twice a second, in step with the text cursor's blink,
+  where at `COCAINE_DISPLAY=1280x1024` it gets about thirty and pulses
+  smoothly. The guest's display memory and the viewer's file agree, so the
+  copy to the viewer isn't it; a hook on `CGXFlushWindow` changed nothing.
+  The two runs differ in size and in 2x drawing (`COCAINE_UI_SCALE`), which
+  weren't told apart; 2x is suspected, with the button redrawn only when the
+  main thread next wakes. Not looked into further.
 
 - Guest pages are 4 KB and Apple Silicon pages are 16 KB, so guest memory
   protections are tracked but not enforced. The exception is the zero page,
