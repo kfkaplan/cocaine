@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -206,7 +207,8 @@ void names_in(GuestCall& c, void (*del)(ALsizei, const ALuint*)) {
 void alGenBuffers_(GuestCall& c) { names_out(c, alGenBuffers); }
 void alDeleteBuffers_(GuestCall& c) { names_in(c, alDeleteBuffers); }
 void alGenSources_(GuestCall& c) { names_out(c, alGenSources); }
-void alDeleteSources_(GuestCall& c) { names_in(c, alDeleteSources); }
+void forget_sources(ALsizei n, const ALuint* names);
+void alDeleteSources_(GuestCall& c) { names_in(c, forget_sources); }
 void alIsBuffer_(GuestCall& c) {
   const ALuint b = c.i();
   const ALboolean yes = alIsBuffer(b);
@@ -301,9 +303,64 @@ void tally() {  // with -v, now and then: what the game has sent to the speakers
              (u32)g_queued, (unsigned long long)g_bytes, (int)error);
   }
 }
+// ---- streams the game stalled on ------------------------------------------------
+//
+// A game streaming music keeps a source's queue topped up from its main loop.
+// When that loop stalls (Marble Blast's does while its window is dragged),
+// the queue runs dry, and this Mac's OpenAL stops the source. The OpenAL
+// games of the time kept such a source playing, waiting for more; Marble
+// Blast takes "stopped" for the end of the track, lets the source go, and
+// then pours the rest of the song through it in silence (every buffer
+// queued on a stopped source counts as played at once), so the music comes
+// back as the wrong track, or garbled. So while the game still means a
+// stream to play, it isn't told the stream stopped for want of buffers, and
+// the stream starts again when more arrive. A stream the game stopped
+// feeding while it went on running is let stop as usual.
+std::mutex g_stream_mu;
+// The game's running time: real time, except that a gap between two OpenAL
+// calls counts as a tenth of a second at most (the game was stalled).
+u64 g_active_ns = 0, g_last_call_ns = 0;
+// Sources the game started and hasn't stopped, with the running time it last
+// queued buffers on each.
+std::unordered_map<ALuint, u64> g_playing;
+constexpr u64 kStallGap = 100000000ull, kStillFeeding = 1000000000ull;
+
+void tick_active() {
+  const u64 now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+  std::lock_guard<std::mutex> lk(g_stream_mu);
+  if (g_last_call_ns) g_active_ns += std::min(now - g_last_call_ns, kStallGap);
+  g_last_call_ns = now;
+}
+
+// Whether a source the host has stopped is only starved: a stream the game
+// still means to play and fed lately.
+bool starved(ALuint s) {
+  {
+    std::lock_guard<std::mutex> lk(g_stream_mu);
+    auto it = g_playing.find(s);
+    if (it == g_playing.end() || g_active_ns - it->second > kStillFeeding) return false;
+  }
+  ALint type = 0;
+  alGetSourcei(s, AL_SOURCE_TYPE, &type);
+  return type == AL_STREAMING;
+}
+
+// Deleted sources leave the list of those playing.
+void forget_sources(ALsizei n, const ALuint* names) {
+  {
+    std::lock_guard<std::mutex> lk(g_stream_mu);
+    for (ALsizei k = 0; k < n; k++) g_playing.erase(names[k]);
+  }
+  alDeleteSources(n, names);
+}
+
 void alSourcePlay_(GuestCall& c) {
   const ALuint s = c.i();
   if (g_trace) log_info("OpenAL: alSourcePlay(%u)", s);
+  {
+    std::lock_guard<std::mutex> lk(g_stream_mu);
+    g_playing[s] = g_active_ns;
+  }
   alSourcePlay(s);
   g_plays++;
   tally();
@@ -311,6 +368,10 @@ void alSourcePlay_(GuestCall& c) {
 void alSourceStop_(GuestCall& c) {
   const ALuint s = c.i();
   if (g_trace) log_info("OpenAL: alSourceStop(%u)", s);
+  {
+    std::lock_guard<std::mutex> lk(g_stream_mu);
+    g_playing.erase(s);
+  }
   alSourceStop(s);
 }
 void alSourcef_(GuestCall& c) {
@@ -365,6 +426,8 @@ void alGetSourcei_(GuestCall& c) {
   u8* out = gp(c, c.i());
   ALint v = 0;
   alGetSourcei(s, p, &v);
+  if (p == AL_SOURCE_STATE && v == AL_STOPPED && starved(s)) v = AL_PLAYING;
+  if (g_trace) log_info("OpenAL: alGetSourcei(%u, 0x%x) = 0x%x", s, (unsigned)p, (unsigned)v);
   if (out) wr32(out, (u32)v);
 }
 void alSourceQueueBuffers_(GuestCall& c) {
@@ -375,6 +438,20 @@ void alSourceQueueBuffers_(GuestCall& c) {
   std::vector<ALuint> v((size_t)n);
   for (ALsizei k = 0; k < n; k++) v[(size_t)k] = rd32(in + 4 * k);
   alSourceQueueBuffers(s, n, v.data());
+  if (g_trace) log_info("OpenAL: alSourceQueueBuffers(%u, %d) first %u", s, (int)n, v[0]);
+  bool playing;
+  {
+    std::lock_guard<std::mutex> lk(g_stream_mu);
+    auto it = g_playing.find(s);
+    playing = it != g_playing.end();
+    if (playing) it->second = g_active_ns;
+  }
+  ALint state = 0;
+  if (playing) alGetSourcei(s, AL_SOURCE_STATE, &state);
+  if (state == AL_STOPPED) {  // ran dry while the game wasn't looking: carry on
+    if (g_trace) log_info("OpenAL: source %u ran out of sound; starting it again", s);
+    alSourcePlay(s);
+  }
   g_queued += (u32)n;
   tally();
 }
@@ -385,6 +462,7 @@ void alSourceUnqueueBuffers_(GuestCall& c) {
   if (n <= 0 || !out) return;
   std::vector<ALuint> v((size_t)n);
   alSourceUnqueueBuffers(s, n, v.data());
+  if (g_trace) log_info("OpenAL: alSourceUnqueueBuffers(%u, %d) first %u", s, (int)n, v[0]);
   for (ALsizei k = 0; k < n; k++) wr32(out + 4 * k, v[(size_t)k]);
 }
 
@@ -439,6 +517,7 @@ void alGetListeneri_(GuestCall& c) {
 // For working on cocaine: COCAINE_AL_TRACE=1 logs each call that leaves an
 // OpenAL error, and the source calls with their arguments.
 void after(const char* name) {
+  tick_active();
   if (!g_trace) return;
   const ALenum e = alGetError();
   if (e == AL_NO_ERROR) return;

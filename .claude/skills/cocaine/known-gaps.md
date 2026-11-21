@@ -54,8 +54,8 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   them, which is most of what a floating point loop now costs.
 - Neither translator ever frees what it has translated. Each has room
   for 128 MB of ARM64 code, which is a lot of program; past that, new code
-  is interpreted. AltiVec instructions, and the less common floating point
-  ones, are handed to the interpreter one at a time, so code that is mostly
+  is interpreted. The less common AltiVec and floating point instructions
+  are handed to the interpreter one at a time, so code that is mostly
   those runs no faster than before.
 - The pasteboard server isn't running, so copy and paste between apps
   doesn't work.
@@ -108,3 +108,11 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   CarbonCore, not yet understood), so it writes to an empty path plus `~`,
   which lands in the system root as `sysroots/10.5/~`. Harmless: the
   database is built again in memory on each run.
+- Leopard's open and save panels don't work: the file browser stays
+  blank, and VLC's Browse button crashes in `DASessionScheduleWithRunLoop`
+  (no disk arbitration daemon). Tried on 2026-11-20 and rolled back: running
+  diskarbitrationd, and showing this Mac's picker in NSOpenPanel's place.
+  Opening Leopard's panel at all upsets the program's window server traffic
+  (oversized event messages, replies landing on the wrong call,
+  `CGSAddTrackingRect` errors), leaving its dialogs unresponsive; that is
+  the thing to fix first.

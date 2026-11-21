@@ -204,10 +204,12 @@ Moved from the README on 2026-11-18. Each step, what was done and what was learn
    (`src/cpu/ppc/ppc_jit.cpp`; "The translator" above says how it works).
    Its first version kept every guest register in memory and ran a Python
    loop 4 times as fast as the interpreter; keeping the busiest seventeen in
-   host registers made that 12.7 times. Still to do there: AltiVec and the
-   rarer floating point instructions go to the interpreter one at a time,
-   and a compare followed by a branch could be one host instruction pair
-   instead of a dozen.
+   host registers made that 12.7 times. AltiVec's common instructions are
+   translated to NEON since 2026-11-20 (VLC's Open dialog at 2560 x 1600:
+   4.5 s to 1 s). Still to do there: the rarer AltiVec and floating point
+   instructions go to the interpreter one at a time (`COCAINE_JIT_STATS`
+   lists them), and a compare followed by a branch could be one host
+   instruction pair instead of a dozen.
 
    Intel followed (`src/cpu/x86/x86_jit.cpp`): the common integer
    instructions, with the interpreter's own routines called for arithmetic

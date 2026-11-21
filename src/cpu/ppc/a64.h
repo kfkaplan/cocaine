@@ -258,6 +258,43 @@ constexpr u32 mulv(u32 size, int vd, int vn, int vm) { return rrr(0x4E209C00 | s
 // Shifts of each element by a constant: right by 1 to its width, left by 0 to one less.
 constexpr u32 ushrv(u32 size, int vd, int vn, u32 n) { return 0x6F000400 | ((16u << size) - n) << 16 | (u32)vn << 5 | (u32)vd; }
 constexpr u32 sshrv(u32 size, int vd, int vn, u32 n) { return 0x4F000400 | ((16u << size) - n) << 16 | (u32)vn << 5 | (u32)vd; }
+
+// -- for the PowerPC translator's AltiVec (four singles, or integers of `size`) --
+constexpr u32 fmlav(int vd, int vn, int vm) { return rrr(0x4E20CC00, vd, vn, vm); }  // vd += vn * vm, rounded once
+constexpr u32 fnegv(int vd, int vn) { return 0x6EA0F800 | (u32)vn << 5 | (u32)vd; }
+constexpr u32 fmaxv(int vd, int vn, int vm) { return rrr(0x4E20F400, vd, vn, vm); }
+constexpr u32 fminv(int vd, int vn, int vm) { return rrr(0x4EA0F400, vd, vn, vm); }
+constexpr u32 frintnv(int vd, int vn) { return 0x4E218800 | (u32)vn << 5 | (u32)vd; }  // to nearest, ties to even
+constexpr u32 frintmv(int vd, int vn) { return 0x4E219800 | (u32)vn << 5 | (u32)vd; }  // down
+constexpr u32 frintpv(int vd, int vn) { return 0x4EA18800 | (u32)vn << 5 | (u32)vd; }  // up
+constexpr u32 frintzv(int vd, int vn) { return 0x4EA19800 | (u32)vn << 5 | (u32)vd; }  // towards zero
+constexpr u32 fmov_one4s(int vd) { return 0x4F03F600 | (u32)vd; }                     // 1.0 in each of four
+// Words to singles, divided by 2^fbits (0 to 31).
+constexpr u32 ucvtfv_fixed(int vd, int vn, u32 fbits) {
+  return fbits ? 0x6F20E400 | (64 - fbits) << 16 | (u32)vn << 5 | (u32)vd : 0x6E21D800 | (u32)vn << 5 | (u32)vd;
+}
+constexpr u32 scvtfv_fixed(int vd, int vn, u32 fbits) {
+  return fbits ? 0x4F20E400 | (64 - fbits) << 16 | (u32)vn << 5 | (u32)vd : 0x4E21D800 | (u32)vn << 5 | (u32)vd;
+}
+// Singles to words, multiplied by 2^fbits (0 to 31), towards zero, saturating.
+constexpr u32 fcvtzuv_fixed(int vd, int vn, u32 fbits) {
+  return fbits ? 0x6F20FC00 | (64 - fbits) << 16 | (u32)vn << 5 | (u32)vd : 0x6EA1B800 | (u32)vn << 5 | (u32)vd;
+}
+constexpr u32 fcvtzsv_fixed(int vd, int vn, u32 fbits) {
+  return fbits ? 0x4F20FC00 | (64 - fbits) << 16 | (u32)vn << 5 | (u32)vd : 0x4EA1B800 | (u32)vn << 5 | (u32)vd;
+}
+constexpr u32 tbl2(int vd, int vn, int vm) { return rrr(0x4E002000, vd, vn, vm); }    // bytes of vn, vn+1 picked by vm
+constexpr u32 rev64v(int vd, int vn) { return 0x4E200800 | (u32)vn << 5 | (u32)vd; }    // bytes reversed in each half
+constexpr u32 extv(int vd, int vn, int vm, u32 at) { return rrr(0x6E000000, vd, vn, vm) | at << 11; }  // vn:vm from byte `at`
+// One element of vn in every element: `size` as above, `index` counted in host order.
+constexpr u32 dup_elem(u32 size, int vd, int vn, u32 index) {
+  return 0x4E000400 | (((index << 1 | 1) << size) & 0x1F) << 16 | (u32)vn << 5 | (u32)vd;
+}
+constexpr u32 dup_w(u32 size, int vd, int wn) { return 0x4E000C00 | (1u << size) << 16 | (u32)wn << 5 | (u32)vd; }  // a register's low element
+constexpr u32 ushlv(u32 size, int vd, int vn, int vm) { return rrr(0x6E204400 | size << 22, vd, vn, vm); }  // by each of vm, right if negative
+constexpr u32 negv(u32 size, int vd, int vn) { return 0x6E20B800 | size << 22 | (u32)vn << 5 | (u32)vd; }
+// Each element halved in width, into the low half (the high half cleared), or with `hi` into the high half (the low kept).
+constexpr u32 xtnv(u32 size, bool hi, int vd, int vn) { return 0x0E212800 | (u32)hi << 30 | size << 22 | (u32)vn << 5 | (u32)vd; }
 constexpr u32 shlv(u32 size, int vd, int vn, u32 n) { return 0x4F005400 | ((8u << size) + n) << 16 | (u32)vn << 5 | (u32)vd; }
 
 // -- branches. Offsets are in bytes from the instruction itself. --

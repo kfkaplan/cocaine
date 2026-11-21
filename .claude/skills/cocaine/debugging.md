@@ -22,7 +22,7 @@ environment variables, none of which change anything unless set:
 | `COCAINE_SESSION_TRACE=1` | log every request the session server receives, with its sender |
 | `COCAINE_DAEMON_STRACE=1` | pass `--strace` to every daemon the session starts; their system calls land, interleaved, in the session log |
 | `COCAINE_JIT=0` | interpret guest code instead of translating it |
-| `COCAINE_JIT_STATS=1` | on exit, say how much was translated and which instructions were left to the interpreter |
+| `COCAINE_JIT_STATS=1` | on exit, say how much was translated and which instructions were left to the interpreter (AltiVec ones too: opcode 4 with the low 6 bits for the three-source forms, else the low 11); a number of seconds instead also reports then, for programs that don't end |
 | `COCAINE_FAULT_MEM=r6:160,@2eebd0:16` | when a PowerPC guest crashes, also print memory at those registers or addresses (the crash report always names the library each caller is in) |
 | `COCAINE_NAN=1` | report the first places a PowerPC guest's floating point arithmetic makes a NaN out of numbers, with the inputs (interpreted, so slow) |
 | `COCAINE_GL_FRAME=n:file` | save OpenGL frame n, as cocaine read it back from the Mac's GPU, to `file` (raw, A R G B, bottom row first) |

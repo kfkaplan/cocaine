@@ -17,10 +17,18 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   CPU state on every way out, so the rest of cocaine never sees the
   difference. Blocks jump straight to each other once both exist; a
   return or a call through a pointer finds its block in a table without
-  leaving translated code. Anything rare (AltiVec, the odder floating
-  point, traps) is done by calling the interpreter for that one
-  instruction, which is what keeps the translator small and lets it be
-  checked: the same tests run both ways and must agree bit for bit. When
+  leaving translated code. AltiVec's common instructions (the float
+  arithmetic, permutes, merges, splats, loads and stores, conversions and
+  compares that Leopard's drawing lives on) become NEON: a vector register
+  is kept byte-reversed, so loaded whole its elements are in reverse order,
+  each in host byte order, and element-wise work is the same instruction;
+  only what cares where an element sits is renumbered (`vperm` is a `TBL`
+  over {b, a} with index `~c & 31`, `lvx` a load and a 16-byte reverse).
+  Vector float ops check the FPSCR rounds to nearest, since AltiVec always
+  does, and leave the rare other case to the interpreter. Anything else
+  rare (the remaining AltiVec, the odder floating point, traps) is done by
+  calling the interpreter for that one instruction, which is what keeps
+  the translator small and lets it be checked: the same tests run both ways and must agree bit for bit. When
   guest memory holding code is unmapped, mapped over, or flushed by the
   guest's own "I have written code here" call, the blocks from it are
   dropped. A forked child keeps its parent's translations.
@@ -181,7 +189,12 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   games' 16-bit samples usually aren't, but the OpenAL that early universal
   games bundled kept PowerPC's order on Intel too (Marble Blast Gold's
   declares its input big-endian), so for Intel guests each buffer is read
-  both ways and whichever is smooth rather than noise wins. Pixel
+  both ways and whichever is smooth rather than noise wins. A streamed
+  source that runs dry while the game still means it to play (Marble
+  Blast's music, when its main loop stalls during a window drag) is
+  reported as playing and started again when buffers arrive, as the
+  OpenAL of the time behaved; this Mac's stops it, and the game took that
+  for the end of the track. Pixel
   data needs no copy, because the host's swap-bytes pixel setting is kept
   the opposite of the guest's. Vertex arrays are noted when the guest
   points at them and converted at each draw. Each guest OpenGL context

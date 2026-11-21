@@ -42,6 +42,8 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <thread>
+#include <unistd.h>
 #include <unordered_map>
 #include <vector>
 
@@ -105,6 +107,11 @@ struct Jit {
 };
 Jit g;
 
+// lvsl and lvsr in host order: a vector register's bytes are stored
+// reversed (see PPCState::Vec), so guest byte i is host byte 15 - i.
+alignas(16) const u8 kDescending15[16] = {15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0};
+alignas(16) const u8 kDescending31[16] = {31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 20, 19, 18, 17, 16};
+
 thread_local PPCStop tl_stop;
 
 // For working on the translator: COCAINE_JIT_STATS=1 counts what leaves
@@ -160,7 +167,18 @@ u32 helper_step(PPCState* s, u32 pc) {
   return 1;
 }
 
+// With COCAINE_JIT_STATS, AltiVec instructions are counted too: opcode 4,
+// then the low six bits for the three-operand forms (32 and up) or the low
+// eleven otherwise; loads and stores as opcode 31 with their extended opcode.
+void count_altivec(u32 insn) {
+  const u32 op = insn >> 26;
+  const u32 sub = op == 4 ? ((insn & 0x3F) >= 32 ? insn & 0x3F : insn & 0x7FF) : (insn >> 1) & 0x3FF;
+  std::lock_guard<std::mutex> lk(g_stats.mu);
+  g_stats.stepped[op << 16 | sub]++;
+}
+
 u32 helper_altivec(PPCState* s, u32 insn, u32 pc) {
+  if (__builtin_expect(g_stats.on, 0)) count_altivec(insn);
   if (altivec_exec(*s, insn)) return 0;
   s->pc = pc;
   tl_stop = {PPCStopKind::Illegal, pc, insn};
@@ -168,6 +186,7 @@ u32 helper_altivec(PPCState* s, u32 insn, u32 pc) {
 }
 
 u32 helper_altivec_mem(PPCState* s, u32 insn, u32 pc) {
+  if (__builtin_expect(g_stats.on, 0)) count_altivec(insn);
   if (altivec_memory(*s, insn)) return 0;
   s->pc = pc;
   tl_stop = {PPCStopKind::Illegal, pc, insn};
@@ -603,6 +622,296 @@ class Translator : Emitter {
     fixes_.push_back({kColdStop, forward(cbnzw(S0, 0), 19), 0, 0, nullptr});
   }
 
+  // ---- AltiVec, done with the host's own vector instructions ----
+  // A register is kept byte-reversed in the PPCState, so loaded whole into
+  // a NEON register its elements sit in reverse order, each in host byte
+  // order: anything done to every element alike is the same instruction,
+  // and only what cares where an element sits (permutes, splats, merges,
+  // loads and stores) needs its numbering turned round. Registers stay in
+  // the PPCState; v0-v4 are scratch. Returns false for what's left to the
+  // helper (and so the interpreter), which must then be called.
+  static u32 vr_at(u32 n) { return OFF(vr) + 16 * n; }
+  void vload(int v, u32 n) { e(ldrq_at(v, ST, vr_at(n))); }
+  void vstore(u32 n, int v) { e(strq_at(v, ST, vr_at(n))); }
+  // Vector floating point always rounds to nearest, whatever the FPSCR
+  // says, and translated code runs in the FPSCR's mode: in the rare case
+  // it isn't nearest, the interpreter does the instruction instead. Before
+  // anything is changed, so rejoin() must end the instruction.
+  void nearest_only() {
+    load_state(S0, OFF(fpscr));
+    e(andw_i(S0, S0, mask32(3)));
+    rarely(forward(cbnzw(S0, 0), 19));
+  }
+  void splat(u32 size, int v, u32 value) {
+    imm(S0, value);
+    e(dup_w(size, v, S0));
+  }
+
+  bool vector_native(u32 insn) {
+    const u32 vd = (insn >> 21) & 31, va = (insn >> 16) & 31, vb = (insn >> 11) & 31, vc = (insn >> 6) & 31;
+    if ((insn & 0x3F) >= 32) {  // the three-source forms
+      switch (insn & 0x3F) {
+        case 42:  // vsel: b where c has a bit, else a
+          vload(0, va), vload(1, vb), vload(2, vc);
+          e(bslv(2, 1, 0));
+          vstore(vd, 2);
+          return true;
+        case 43:  // vperm. With the table {b, a} in host order, guest byte n of a:b is entry 31 - n.
+          vload(2, vb), vload(3, va), vload(1, vc);
+          e(mvnv(1, 1));
+          splat(0, 4, 31);
+          e(andv(1, 1, 4));
+          e(tbl2(0, 2, 1));
+          vstore(vd, 0);
+          return true;
+        case 44: {  // vsldoi: a:b shifted left by whole bytes
+          const u32 sh = vc & 15;
+          vload(0, va);
+          if (sh) {
+            vload(1, vb);
+            e(extv(0, 1, 0, 16 - sh));
+          }
+          vstore(vd, 0);
+          return true;
+        }
+        case 46:  // vmaddfp: a*c + b, rounded once (NaNs chosen as fmaf(a, c, b) chooses)
+          nearest_only();
+          vload(0, va), vload(1, vb), vload(2, vc);
+          e(fmlav(1, 0, 2));
+          vstore(vd, 1);
+          rejoin();
+          return true;
+        case 47:  // vnmsubfp: -(a*c - b), a NaN left as it is (see altivec.cpp)
+          nearest_only();
+          vload(0, va), vload(1, vb), vload(2, vc);
+          e(fnegv(1, 1));
+          e(fmlav(1, 0, 2));
+          e(fnegv(3, 1));
+          e(fcmeqv(false, 4, 1, 1));
+          e(bslv(4, 3, 1));
+          vstore(vd, 4);
+          rejoin();
+          return true;
+        default:
+          return false;
+      }
+    }
+    if ((insn & 0x3F) == 6) {  // compares; with the record bit, CR6 says all (8) or none (2) matched
+      u32 word;
+      switch (insn & 0x3FF) {
+        case 6: word = cmeqv(0, 0, 0, 1); break;          // vcmpequb
+        case 70: word = cmeqv(1, 0, 0, 1); break;         // vcmpequh
+        case 134: word = cmeqv(2, 0, 0, 1); break;        // vcmpequw
+        case 198: word = fcmeqv(false, 0, 0, 1); break;   // vcmpeqfp
+        case 454: word = fcmgev(false, 0, 0, 1); break;   // vcmpgefp
+        case 710: word = fcmgtv(false, 0, 0, 1); break;   // vcmpgtfp
+        case 774: word = cmgtv(0, 0, 0, 1); break;        // vcmpgtsb
+        case 838: word = cmgtv(1, 0, 0, 1); break;        // vcmpgtsh
+        case 902: word = cmgtv(2, 0, 0, 1); break;        // vcmpgtsw
+        default: return false;
+      }
+      vload(0, va), vload(1, vb);
+      e(word);
+      vstore(vd, 0);
+      if (insn & 0x400) {
+        e(fmov_xd(S0, 0));
+        e(umov_xd1(S1, 0));
+        e(andx(T0, S0, S1));  // all ones: every element matched
+        e(orrx(S0, S0, S1));  // zero: none did
+        and_imm(CRREG, CRREG, ~0xF0u);
+        e(cmnx_i(T0, 1));
+        e(csetw(S1, EQ));
+        e(orrw(CRREG, CRREG, S1, 7));
+        e(cmnx_i(S0, 0));
+        e(csetw(S1, EQ));
+        e(orrw(CRREG, CRREG, S1, 5));
+      }
+      return true;
+    }
+    const u32 xo = insn & 0x7FF;
+    auto two = [&](u32 word) {  // vd = a op b, the result built in v0
+      vload(0, va), vload(1, vb);
+      e(word);
+      vstore(vd, 0);
+      return true;
+    };
+    auto one_of_b = [&](u32 word) {  // vd = op b
+      vload(1, vb);
+      e(word);
+      vstore(vd, 0);
+      return true;
+    };
+    switch (xo) {
+      case 0: return two(addv(0, 0, 0, 1));        // vaddubm
+      case 64: return two(addv(1, 0, 0, 1));       // vadduhm
+      case 128: return two(addv(2, 0, 0, 1));      // vadduwm
+      case 1024: return two(subv(0, 0, 0, 1));     // vsububm
+      case 1088: return two(subv(1, 0, 0, 1));     // vsubuhm
+      case 1152: return two(subv(2, 0, 0, 1));     // vsubuwm
+      case 1028: return two(andv(0, 0, 1));        // vand
+      case 1092: return two(bicv(0, 0, 1));        // vandc
+      case 1156: return two(orrv(0, 0, 1));        // vor
+      case 1220: return two(eorv(0, 0, 1));        // vxor
+      case 1284:                                   // vnor
+        vload(0, va), vload(1, vb);
+        e(orrv(0, 0, 1));
+        e(mvnv(0, 0));
+        vstore(vd, 0);
+        return true;
+      // Merges: the high halves of a and b interleaved, a's first in guest
+      // order, are the high halves of b and a interleaved in host order.
+      case 12: return two(zip2v(0, 0, 1, 0));      // vmrghb
+      case 76: return two(zip2v(1, 0, 1, 0));      // vmrghh
+      case 140: return two(zip2v(2, 0, 1, 0));     // vmrghw
+      case 268: return two(zip1v(0, 0, 1, 0));     // vmrglb
+      case 332: return two(zip1v(1, 0, 1, 0));     // vmrglh
+      case 396: return two(zip1v(2, 0, 1, 0));     // vmrglw
+      case 524: return one_of_b(dup_elem(0, 0, 1, 15 - (va & 15)));  // vspltb
+      case 588: return one_of_b(dup_elem(1, 0, 1, 7 - (va & 7)));    // vsplth
+      case 652: return one_of_b(dup_elem(2, 0, 1, 3 - (va & 3)));    // vspltw
+      case 780:                                                      // vspltisb
+      case 844:                                                      // vspltish
+      case 908:                                                      // vspltisw
+        splat(xo == 780 ? 0 : xo == 844 ? 1 : 2, 0, (u32)((s32)(va << 27) >> 27));
+        vstore(vd, 0);
+        return true;
+      case 260: case 324: case 388:    // vslb, vslh, vslw: each by its own count, modulo the width
+      case 516: case 580: case 644: {  // vsrb, vsrh, vsrw
+        const u32 size = (xo >> 6) & 3;
+        vload(0, va), vload(1, vb);
+        splat(size, 2, (8u << size) - 1);
+        e(andv(1, 1, 2));
+        if (xo >= 516) e(negv(size, 1, 1));
+        e(ushlv(size, 0, 0, 1));
+        vstore(vd, 0);
+        return true;
+      }
+      case 8:     // vmuloub
+      case 72: {  // vmulouh: the odd elements, guest-numbered, are the even ones in host order
+        const u32 size = xo == 8 ? 1 : 2;
+        vload(0, va), vload(1, vb);
+        splat(size, 2, xo == 8 ? 0xFFu : 0xFFFFu);
+        e(andv(0, 0, 2));
+        e(andv(1, 1, 2));
+        e(mulv(size, 0, 0, 1));
+        vstore(vd, 0);
+        return true;
+      }
+      case 14:    // vpkuhum
+      case 78: {  // vpkuwum: a's elements narrowed then b's, guest order; b's low in host order
+        const u32 size = xo == 14 ? 0 : 1;
+        vload(0, va), vload(1, vb);
+        e(xtnv(size, false, 2, 1));
+        e(xtnv(size, true, 2, 0));
+        vstore(vd, 2);
+        return true;
+      }
+      case 10:  // vaddfp
+      case 74:  // vsubfp
+        nearest_only();
+        vload(0, va), vload(1, vb);
+        e(xo == 10 ? faddv(false, 0, 0, 1) : fsubv(false, 0, 0, 1));
+        vstore(vd, 0);
+        rejoin();
+        return true;
+      case 1034:    // vmaxfp
+      case 1098: {  // vminfp: a NaN wins as it is, a first; +0 is bigger than -0
+        vload(0, va), vload(1, vb);
+        e(xo == 1034 ? fmaxv(2, 0, 1) : fminv(2, 0, 1));
+        e(fcmeqv(false, 3, 1, 1));
+        e(bslv(3, 2, 1));
+        e(fcmeqv(false, 4, 0, 0));
+        e(bslv(4, 3, 0));
+        vstore(vd, 4);
+        return true;
+      }
+      case 266:  // vrefp, and vrsqrtefp: correctly rounded, as the interpreter does them
+      case 330:
+        nearest_only();
+        vload(1, vb);
+        if (xo == 330) e(fsqrtv(false, 1, 1));
+        e(fmov_one4s(0));
+        e(fdivv(false, 0, 0, 1));
+        vstore(vd, 0);
+        rejoin();
+        return true;
+      case 522: return one_of_b(frintnv(0, 1));    // vrfin
+      case 586: return one_of_b(frintzv(0, 1));    // vrfiz
+      case 650: return one_of_b(frintpv(0, 1));    // vrfip
+      case 714: return one_of_b(frintmv(0, 1));    // vrfim
+      case 778:  // vcfux, vcfsx: words to singles, divided by 2^va
+      case 842:
+        nearest_only();
+        vload(1, vb);
+        e(xo == 778 ? ucvtfv_fixed(0, 1, va) : scvtfv_fixed(0, 1, va));
+        vstore(vd, 0);
+        rejoin();
+        return true;
+      case 906:     // vctuxs
+      case 970: {   // vctsxs: times 2^va, towards zero, saturating, which sets VSCR's SAT
+        const bool u = xo == 906;
+        vload(1, vb);
+        e(u ? fcvtzuv_fixed(0, 1, va) : fcvtzsv_fixed(0, 1, va));
+        vstore(vd, 0);
+        // Saturated where b*2^va >= 2^32 (2^31), or <= -1 (< -2^31); a NaN never.
+        splat(2, 2, ((u ? 159u : 158u) - va) << 23);
+        splat(2, 3, 0x80000000u | ((u ? 127u : 158u) - va) << 23);
+        e(fcmgev(false, 2, 1, 2));
+        e(u ? fcmgev(false, 3, 3, 1) : fcmgtv(false, 3, 3, 1));
+        e(orrv(2, 2, 3));
+        e(fmov_xd(S0, 2));
+        e(umov_xd1(S1, 2));
+        e(orrx(S0, S0, S1));
+        e(cmnx_i(S0, 0));
+        e(csetw(S0, NE));
+        load_state(S1, OFF(vscr));
+        e(orrw(S1, S1, S0));
+        store_state(S1, OFF(vscr));
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
+  // lvx, stvx and the permute controls; false for the element loads and
+  // stores, left to the helper.
+  bool vector_memory_native(u32 insn) {
+    const u32 vd = (insn >> 21) & 31, ra = (insn >> 16) & 31, rb = (insn >> 11) & 31;
+    switch ((insn >> 1) & 0x3FF) {
+      case 103:
+      case 359: {  // lvx, lvxl: sixteen bytes from the aligned address, reversed
+        and_imm(T0, ea_x(ra, rb), ~15u);
+        e(ldrq_idx(0, MEM, T0));
+        e(rev64v(0, 0));
+        e(extv(0, 0, 0, 8));
+        vstore(vd, 0);
+        return true;
+      }
+      case 231:
+      case 487: {  // stvx, stvxl
+        and_imm(T0, ea_x(ra, rb), ~15u);
+        vload(0, vd);
+        e(rev64v(0, 0));
+        e(extv(0, 0, 0, 8));
+        e(strq_idx(0, MEM, T0));
+        return true;
+      }
+      case 6:     // lvsl: guest byte i is sh + i
+      case 38: {  // lvsr: 16 - sh + i
+        and_imm(T0, ea_x(ra, rb), 15);
+        e(dup_w(0, 1, T0));
+        address(S1, ((insn >> 1) & 0x3FF) == 6 ? kDescending15 : kDescending31);
+        e(ldrq_at(0, S1, 0));
+        e(((insn >> 1) & 0x3FF) == 6 ? addv(0, 0, 0, 1) : subv(0, 0, 0, 1));
+        vstore(vd, 0);
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
   // The branch conditions shared by bc, bclr and bcctr. Returns the branches
   // taken when the guest's branch is not, to be bound after it.
   std::vector<Fix> conditions(u32 bo, u32 bi, bool counts) {
@@ -958,7 +1267,7 @@ bool Translator::one(u32 insn) {
     case 63:
       return op63(insn);
     case 4:  // AltiVec
-      vector(insn, g.t_altivec);
+      if (!vector_native(insn)) vector(insn, g.t_altivec);
       return false;
     default:
       fallback(true);
@@ -1361,7 +1670,7 @@ bool Translator::op31(u32 insn) {
     case 199:
     case 231:
     case 487:
-      vector(insn, g.t_altivec_mem);
+      if (!vector_memory_native(insn)) vector(insn, g.t_altivec_mem);
       return false;
 
     // Everything else this group has: the forms that record overflow, the
@@ -1586,7 +1895,16 @@ void link(const PPCState& s, u32 site) {
 
 bool enabled() {
   static const bool on = [] {
-    g_stats.on = getenv("COCAINE_JIT_STATS") != nullptr;
+    const char* stats = getenv("COCAINE_JIT_STATS");
+    g_stats.on = stats != nullptr;
+    // A number of seconds: report then too, for programs that don't end.
+    if (stats && atoi(stats) > 1) {
+      const int secs = atoi(stats);
+      std::thread([secs] {
+        sleep((unsigned)secs);
+        ppc_jit_report();
+      }).detach();
+    }
     const char* e = getenv("COCAINE_JIT");
     return !e || atoi(e) != 0;
   }();
@@ -1677,9 +1995,12 @@ void ppc_jit_report() {
                (unsigned long long)g_stats.reasons[kSyscall], (unsigned long long)g_stats.reasons[kHostCall],
                (unsigned long long)g_stats.reasons[kStop]);
   std::vector<std::pair<u64, u32>> order;
-  for (const auto& e : g_stats.stepped) order.push_back({e.second, e.first});
+  {
+    std::lock_guard<std::mutex> slk(g_stats.mu);
+    for (const auto& e : g_stats.stepped) order.push_back({e.second, e.first});
+  }
   std::sort(order.rbegin(), order.rend());
-  for (size_t i = 0; i < order.size() && i < 16; i++) {
+  for (size_t i = 0; i < order.size() && i < 40; i++) {
     std::fprintf(stderr, "translator:   %10llu by the interpreter: opcode %u.%u\n",
                  (unsigned long long)order[i].first, order[i].second >> 16, order[i].second & 0xFFFF);
   }
