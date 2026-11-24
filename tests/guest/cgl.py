@@ -126,7 +126,10 @@ gl.glBindTexture.argtypes = [uint, uint]
 gl.glTexParameteri.argtypes = [uint, uint, ctypes.c_int]
 gl.glGetTexLevelParameteriv.argtypes = [uint, ctypes.c_int, uint, intp]
 gl.glTexCoord2f.argtypes = [ctypes.c_float] * 2
+gl.glTexCoord2fv.argtypes = [ctypes.POINTER(ctypes.c_float)]
 gl.glVertex2f.argtypes = [ctypes.c_float] * 2
+gl.glTexImage2D.argtypes = [uint, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                            ctypes.c_int, uint, uint, ctypes.c_void_p]
 for suffix in ("", "ARB"):
     getattr(gl, "glCompressedTexImage2D" + suffix).argtypes = [
         uint, ctypes.c_int, uint] + [ctypes.c_int] * 4 + [ctypes.c_void_p]
@@ -146,10 +149,13 @@ gl.glViewport(0, 0, 1, 1)
 gl.glEnable(0x0de1)
 gl.glColor4f(1, 1, 1, 1)
 
-def textured_pixel():
+def textured_pixel(coordinates=None):
     gl.glBegin(7)
     for x, y, u, v in ((-1, -1, 0, 0), (1, -1, 1, 0), (1, 1, 1, 1), (-1, 1, 0, 1)):
-        gl.glTexCoord2f(u, v)
+        if coordinates is None:
+            gl.glTexCoord2f(u, v)
+        else:
+            gl.glTexCoord2fv(coordinates)
         gl.glVertex2f(x, y)
     gl.glEnd()
     gl.glReadPixels(0, 0, 1, 1, 0x1908, 0x1401, pixel)
@@ -174,6 +180,11 @@ for suffix in ("", "ARB"):
     getattr(gl, "glCompressedTexSubImage2D" + suffix)(0x0de1, 0, 0, 0, 4, 4, 0x83f3, len(blue_block), ctypes.c_char_p(blue_block))
     assert gl.glGetError() == 0
     assert textured_pixel() == (0, 0, 255, 255), tuple(pixel)
+texels = (ctypes.c_ubyte * 16)(255, 0, 0, 255, 0, 255, 0, 255,
+                               0, 0, 255, 255, 255, 255, 255, 255)
+gl.glTexImage2D(0x0de1, 0, 0x1908, 2, 2, 0, 0x1908, 0x1401, texels)
+assert textured_pixel((ctypes.c_float * 2)(0.75, 0.25)) == (0, 255, 0, 255), tuple(pixel)
+assert textured_pixel((ctypes.c_float * 2)(0.25, 0.75)) == (0, 0, 255, 255), tuple(pixel)
 gl.glDisable(0x0de1)
 gl.glBindTexture(0x0de1, 0)
 

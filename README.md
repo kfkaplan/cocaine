@@ -15,13 +15,17 @@ The guest system's screen appears in a window on your Mac.
 
 - **Apps with windows, on both CPUs -** Calculator, VLC 0.9.10, Transmission 1.54 and others run
   on Leopard's own window server, with the mouse, keyboard and scroll wheel.
-  Most apps are drawn at twice the pixels, so they look sharp on a Retina
-  screen.
+  Leopard draws at 1x for compatibility; the viewer handles Retina sizing
+  without changing the app's coordinates.
 - **Games -** Marble Blast Gold (both halves of the universal build) plays at
   60 frames a second with music and sound; GL Golf draws its course.
   Postal 2 draws its startup warning, animated intro and menu, using a
   1024 x 768 display with doubled viewer pixels where they fit. Compressed
-  font textures keep their full resolution.
+  font textures keep their full resolution. Snes9x HQ! displays running game
+  graphics with sound; it uses a 1280 x 800 display with doubled viewer pixels
+  to keep its menus large and its game window on screen.
+  Ghost Recon Demo's menu uses an exact 640 x 480 mode rather than drawing
+  into a corner of a larger display (10.5.6 PowerPC).
   OpenGL and OpenAL calls go to your Mac's own graphics and sound.
 - **Sound -** VLC plays MP3s through your Mac's speakers.
 - **Mounted disk images -** browsable images mounted under `/Volumes` are
@@ -29,8 +33,10 @@ The guest system's screen appears in a window on your Mac.
 - **Command line tools, shells and scripting languages -** from Leopard -
   `ls`, `bash`, `zsh`, Python 2.5, Perl, Ruby and the rest.
 
-The cocaine window follows guest display resolution changes, using two screen
-pixels per guest pixel where they fit. Closing it ends the run.
+The cocaine window follows guest display resolution changes. Its View menu has
+Actual Size (one guest pixel per Mac point), Integer Scale (whole screen pixels)
+and Fit modes, also on Command-1, Command-2 and Command-3. Resizing the window
+doesn't change the guest resolution; unused space is black. Closing it ends the run.
 
 ## The cocaine app
 
@@ -72,8 +78,8 @@ It still needs the build tools below. You can build it yourself with `gui/build.
   need none of this, and a universal app runs its
   PowerPC half unless you ask for `--arch i386`.
 - The programs to run. None come with this repository.
-- Classic PowerPC PEF/CFM support is experimental. EV Nova 1.0.0 gets past
-  loading and monitor setup, but still stops at registration-tool initialization.
+- Classic PowerPC PEF/CFM support is experimental. EV Nova 1.0.0 initializes
+  its registration tool, but the tested scenario files report a checksum mismatch.
   Ghost Recon Demo reaches gameplay, with mouse capture available. The menu
   can be cropped unless the display starts at 800 x 600.
 
@@ -120,8 +126,9 @@ A few settings, as environment variables:
 
 | Variable | What it does |
 |---|---|
-| `COCAINE_DISPLAY=1280x1024` | the guest's screen size (2560 x 1600 by default) |
-| `COCAINE_UI_SCALE=1` | how many times bigger Leopard draws everything (2 by default on a big screen) |
+| `COCAINE_DISPLAY=1280x1024` | the guest's screen size (a conventional resolution fitting your Mac's available logical desktop by default; 1280 x 800 without a screen) |
+| `COCAINE_UI_SCALE=2` | opt into Leopard's unfinished enlarged drawing (1 by default; higher values can break old apps) |
+| `COCAINE_VIEWER_SCALE=fit` | viewer sizing - `actual` (default), `integer` or `fit`; doesn't change guest coordinates |
 | `COCAINE_GL_FPS=0` | lift the 120 frames a second cap on games |
 | `COCAINE_WALLPAPER=/path/to/picture.jpg` | the desktop picture, a JPEG or PNG (`images/linen.jpeg` by default - `none` for Leopard's plain grey) |
 | `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the menu bar instead of cocaine's |

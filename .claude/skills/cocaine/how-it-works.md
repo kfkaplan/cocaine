@@ -78,6 +78,8 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   AppleDouble sidecars supply missing Finder metadata and read-only resource
   forks without changing the imported files. Parent IDs for immediate system
   root children use the guest volume root ID so Carbon can build paths.
+  `setattrlist` translates 32-bit timestamps and byte order when Carbon sets
+  folder dates and Finder metadata together.
   Volume enumeration uses the imported root's backing volume, including its
   actual read-only status, and adds browsable host mounts under `/Volumes`.
   Carbon's `/.vol/<device>/@` and root folder ID 2 resolve those mounts.
@@ -88,7 +90,10 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   libraries:
   - BSD system calls. The host is Darwin too, so most map onto the same host
     call after translating the calling convention, structure layouts and (for
-    PowerPC) byte order. Where today's kernel answers differently, cocaine
+    PowerPC) byte order. `F_PREALLOCATE` translates the guest's 32-bit
+    `fstore_t` to the host structure and returns the bytes allocated.
+    EV Nova's registration tool needs it to initialize its preference file.
+    Where today's kernel answers differently, cocaine
     answers as Leopard's did: `kevent` reports a failed change with flags
     `EV_ERROR` alone, where this Mac keeps the change's own flags too, and
     libevent (in Transmission) took the difference for a broken kqueue and
@@ -110,7 +115,14 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   message that carries its port rights and out-of-line memory as host
   descriptors (`src/kernel/tunnel.h`). The kernel's own objects (task,
   thread, host, clock) are ports cocaine holds the receiving end of; what a
-  guest sends them is answered in place.
+  guest sends them is answered in place. IOKit requests answered in place
+  consume moved port rights but leave copied rights with the sender; losing
+  the task right prevents the window server from replacing resized backing
+  stores. The session server records each
+  process's guest task port at handoff or join, using the host-stamped
+  sender PID for joins. `task_for_pid` can look up those ports within the
+  session, never host task ports; dead ports are discarded. Fork waits for
+  the child's port to be registered before returning to the parent.
 - **The session server.** `launchd` is the directory of system services on a
   real Mac. cocaine's stand-in (`src/session/`) is a small native program,
   one per run, started the first time a guest needs it and ended when the
@@ -162,16 +174,42 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   can start, so a window halfway through being redrawn is never shown torn.
   On the checked 10.5.6 PowerPC CoreGraphics, a second hook tracks virtual
   display mode changes, including dimensions and row stride; RGB555 pixels
-  are expanded to the viewer's 32-bit format. The shared file holds the
+  are expanded to the viewer's 32-bit format. Its mode table also gets real
+  640x480 RGB555 and 32-bit modes, reusing two unsupported indexed-color
+  slots while keeping the existing true-color modes. The first three
+  entries must stay 1x1 placeholders: the driver treats them specially.
+  Without real 640x480 modes, DrawSprocket chooses 800x600 for a 640x480
+  request and apps such as Ghost Recon draw their menus into a corner.
+  These checked in-memory patches are not game-specific and leave viewport
+  and scissor semantics alone. The shared file holds the
   current dimensions with its frame sequence, and has room for modes that
   fit the window server's shared framebuffer, including 16-bit modes expanded
-  to 32 bits. When the dimensions change, the viewer resizes its window to
-  two physical screen pixels per guest pixel by default, or one with
-  `COCAINE_VIEWER_DOUBLE=0`, fitting it to the current screen if necessary.
-  It updates its aspect ratio and input mapping too.
+  to 32 bits. Before guest code starts, `configure_host_display` selects the
+  largest conventional resolution fitting the host screen's available logical
+  points, with room for the viewer frame (1280x800 without a screen), unless
+  `COCAINE_DISPLAY` or a game default already chose one. That size is exported
+  in the environment so all session processes agree. Leopard's
+  `AppleDisplayScaleFactor` defaults to 1 regardless of resolution;
+  `COCAINE_UI_SCALE` explicitly opts into its unfinished enlarged drawing.
+  The viewer defaults to one guest pixel per host logical point, fitting down
+  if necessary. Its View menu (Command-1/2/3) selects Actual Size, Integer Scale
+  or Fit, also selectable with `COCAINE_VIEWER_SCALE=actual|integer|fit`.
+  Integer Scale uses the largest whole physical-pixel multiplier that fits;
+  below one physical pixel it falls back to proportional downscaling. Fit
+  uses the whole available rectangle without changing aspect ratio. A
+  separate picture layer leaves black borders where needed; input uses that
+  layer's rectangle, not the whole window. Border clicks are ignored, but
+  button releases still reach the guest. Whole-pixel enlargement uses nearest
+  filtering; fractional enlargement is linear. Layout and filters update
+  when the window is resized or its backing scale changes, without switching
+  the guest mode. Moving to another screen reapplies the selected sizing
+  policy to that screen's available space. A guest mode change resizes the
+  viewer to the selected presentation size on its current screen. Explicit legacy
+  `COCAINE_VIEWER_DOUBLE=0|1` still requests one or two physical pixels per
+  guest pixel unless `COCAINE_VIEWER_SCALE` is set or a View menu mode is chosen.
   The launcher starts Ghost Recon Demo with an 800x600 display, unless an
-  explicit `COCAINE_DISPLAY` is inherited: at the default size its drawable
-  is too small for its viewport after it switches display modes. It also
+  explicit `COCAINE_DISPLAY` is inherited, retaining the older compatibility
+  default while the guest can now switch to its exact 640x480 menu mode. It also
   sets `COCAINE_VIEWER_DOUBLE=1` unless inherited, to show each guest pixel
   twice as wide and high where the screen has room.
   A polling copier stands down while the hook is active and resumes if it
@@ -264,9 +302,12 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   AGL and CGL presentation is capped at 120 frames a second by default to
   reduce latency for app-drawn cursors; `COCAINE_GL_FPS` overrides it,
   including `60` for the former limit and `0` for no limit.
-  Before starting guest code, programs linked to SDL 1.2 get a default
-  `COCAINE_UI_SCALE=1`. SDL's old QuickDraw driver locates its software
-  pixels by subtracting a view's point frame from its window's pixel frame.
+  Before starting guest code, Snes9x HQ! gets a default `COCAINE_UI_SCALE=1`:
+  its game window is partly off-screen at 2x. It uses a 1280x800 guest
+  display and doubled viewer pixels to keep menus large. Programs linked to
+  SDL 1.2 also get a default `COCAINE_UI_SCALE=1`. SDL's old QuickDraw driver
+  locates its software pixels by subtracting a view's point frame from its
+  window's pixel frame.
   At 2x that puts Postal 2's warning bitmap 385 rows into the backing store,
   while its flush covers the first 384 rows: a blank part of the window.
   Keeping these programs at 1x makes the coordinates agree, without changing
@@ -274,9 +315,10 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   and doubled viewer pixels instead of Leopard's unfinished 2x drawing:
   its menu is larger without breaking the software warning screen. This
   applies to both bundle and executable launches, including the launcher.
-  The viewer uses nearest-neighbor magnification when doubling, so it does
-  not blend neighboring pixels. Explicit `COCAINE_UI_SCALE`,
-  `COCAINE_DISPLAY` and `COCAINE_VIEWER_DOUBLE` still take precedence.
+  These game defaults are retained while applications are tested with the
+  general 1x policy. Explicit `COCAINE_UI_SCALE`, `COCAINE_DISPLAY` and
+  `COCAINE_VIEWER_DOUBLE` still take precedence over game defaults;
+  `COCAINE_VIEWER_SCALE` overrides the viewer's legacy doubling setting.
   CGL pixel format requests,
   like AGL's, are not yet enforced. Those
   QuickDraw calls are guest functions, run from native code

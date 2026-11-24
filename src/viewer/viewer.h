@@ -1,6 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+
+// Resolve the default once, before starting the session, so every process
+// inherits the same guest display even if the viewer later changes screens.
+bool configure_host_display(std::string& error);
 
 // The start of the file a guest's display is copied into for the viewer.
 constexpr uint32_t kDisplayFileMagic = 0x636F6344;  // "cocD"

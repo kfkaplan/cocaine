@@ -14,6 +14,11 @@ inline bool configure_legacy_ui_scale(const std::vector<std::string>& libraries,
     error = std::string("cannot set ") + name + ": " + strerror(errno);
     return false;
   };
+  // This Snes9x build places its game window partly off-screen at 2x.
+  if (bundle_id == "com.snes9x.macos.snes9xcustom" &&
+      (!set_default("COCAINE_UI_SCALE", "1") ||
+       !set_default("COCAINE_DISPLAY", "1280x800") ||
+       !set_default("COCAINE_VIEWER_DOUBLE", "1"))) return false;
   for (const std::string& library : libraries) {
     for (const char* suffix : {"libSDL-1.2.0.dylib", "SDL.framework/Versions/A/SDL",
                                 "SDL.framework/Versions/Current/SDL", "SDL.framework/SDL"}) {

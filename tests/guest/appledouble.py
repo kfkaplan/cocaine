@@ -12,6 +12,11 @@ class AttrList(ctypes.Structure):
                 ("directory", ctypes.c_uint), ("file", ctypes.c_uint),
                 ("fork", ctypes.c_uint)]
 
+class FileStore(ctypes.Structure):
+    _fields_ = [("flags", ctypes.c_uint), ("posmode", ctypes.c_int),
+                ("offset", ctypes.c_longlong), ("length", ctypes.c_longlong),
+                ("bytesalloc", ctypes.c_longlong)]
+
 def attributes(path, common, fileattr):
     attrs = AttrList(5, 0, common, 0, 0, fileattr, 0)
     result = ctypes.create_string_buffer(256)
@@ -29,6 +34,17 @@ finder = "shlbTEST" + "\0" * 24
 fork = "resource data"
 try:
     open(path, "wb").close()
+    fd = os.open(path, os.O_RDWR)
+    try:
+        store = FileStore(0, 3, 0, 4096, 0)
+        assert lib.fcntl(fd, 42, ctypes.byref(store)) == 0
+        assert store.bytesalloc >= 4096
+        assert os.fstat(fd).st_size == 0
+        invalid = FileStore(0, -1, 0, 4096, 0)
+        assert lib.fcntl(fd, 42, ctypes.byref(invalid)) == -1
+        assert lib.fcntl(-1, 42, ctypes.byref(store)) == -1
+    finally:
+        os.close(fd)
     header = struct.pack(">II16sH", 0x51607, 0x20000, "\0" * 16, 2)
     entries = struct.pack(">III", 9, 50, 32) + struct.pack(">III", 2, 82, len(fork))
     f = open(side, "wb")
@@ -58,6 +74,29 @@ try:
     assert lib.setattrlist(path, ctypes.byref(attrs), value, 32, 0) == 0
     rc, data = attributes(path, 0x4000, 0x1000)
     assert rc == 0 and data[4:36] == replacement
+
+    folder = directory + "/folder"
+    os.mkdir(folder)
+    attrs = AttrList(5, 0, 0x6600, 0, 0, 0, 0)
+    value = ctypes.create_string_buffer(struct.pack(
+        "=iiiiii32s", 1200000000, 123000000, 1200000100, 456000000,
+        1200000200, 0, replacement), 56)
+    assert lib.setattrlist(folder, ctypes.byref(attrs), value, 55, 0) == -1
+    assert lib.setattrlist(folder, ctypes.byref(attrs), value, 56, 0) == 0
+    rc, data = attributes(folder, 0x6600, 0)
+    assert rc == 0
+    assert struct.unpack("=ii", data[4:12]) == (1200000000, 123000000)
+    assert struct.unpack("=ii", data[12:20]) == (1200000100, 456000000)
+    assert data[28:60] == replacement
+
+    attrs = AttrList(5, 0, 0x20400, 0, 0, 0, 0)
+    value = ctypes.create_string_buffer(struct.pack("=iiI", 1200000300, 0, 0700), 12)
+    assert lib.setattrlist(folder, ctypes.byref(attrs), value, 12, 0) == 0
+    assert os.stat(folder).st_mode & 0777 == 0700
+    rc, data = attributes(folder, 0x20400, 0)
+    assert rc == 0
+    seconds, nanos, mode = struct.unpack("=iiI", data[4:16])
+    assert (seconds, nanos) == (1200000300, 0) and mode & 0777 == 0700
 
     fd = os.open(path + "/..namedfork/rsrc", os.O_CREAT | os.O_RDWR, 0600)
     os.write(fd, "native")

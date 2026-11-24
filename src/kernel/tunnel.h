@@ -68,5 +68,9 @@ constexpr s32 kEntryAnswer = 0x636F0009;  // the offset (0 if never told)
 // window server's session up, which is when applications may come in. See
 // where it is sent for how that moment is recognized.
 constexpr s32 kSessionReady = 0x636F000A;
+// A session's server keeps the guest task ports registered at handoff and
+// join. Lookups return only ports belonging to processes in that session.
+constexpr s32 kTaskLookup = 0x636F000B;
+constexpr s32 kTaskLookupReply = 0x636F000C;
 
 }  // namespace tunnel

@@ -2,17 +2,19 @@
 
 Moved from the README on 2026-11-18. What doesn't work yet, or works only partly, and why. The README keeps a short list of the ones a user would notice.
 
-- PowerPC PEF/CFM launch is experimental. EV Nova 1.0.0 loads and passes
-  monitor initialization on 10.5.6, but stops at "Error initializing
-  Registration Tool!" even when Finder metadata writes succeed; its cause
-  remains unknown. Do not bypass the game's registration.
+- PowerPC PEF/CFM launch is experimental. EV Nova 1.0.0 initializes its
+  registration tool on 10.5.6 with `F_PREALLOCATE` implemented. The tested
+  installation's unregistered trial reports a scenario checksum mismatch;
+  whether the files or the environment cause it is not established.
+  Do not bypass the game's registration or integrity checks.
 - Ghost Recon Demo's extensionless app bundle is recognized and loads via
   LaunchCFMApp. With volume metadata fixed it gets past its installation
-  check and reaches its menu using the AGL and GLU hooks. The launcher
-  starts it at 800x600 to avoid cropping; at the default display size the
-  menu is cropped after the game switches modes:
-  it uses a 640x480 GL viewport with a 400x300 QuickDraw drawable. The user
-  confirmed that gameplay displays after the larger mode switch was fixed.
+  check and reaches its menu using the AGL and GLU hooks. The checked
+  10.5.6 PowerPC virtual display now offers real 640x480 modes at 16 and
+  32 bits, so its menu no longer draws into a corner of an 800x600 surface.
+  The launcher retains its 800x600 starting display as a compatibility
+  default. The user confirmed that gameplay displays after the larger
+  mode switch was fixed.
 - AppleDouble resource forks are exposed read-only from temporary files when
   native metadata is missing. Their file descriptors do not retain the
   original fork's path, and writable sidecar forks are not supported.
@@ -36,8 +38,8 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   existing fixed accelerated format is used instead. CGL fullscreen draws
   into the captured guest display (Postal 2's animated intro and menu render).
   AGL fullscreen (`aglSetFullScreen`) isn't done, so AGL games have to
-  be set to play in a window. DrawSprocket still runs as guest code and
-  does nothing useful.
+  be set to play in a window. DrawSprocket runs as guest code; Ghost Recon
+  Demo uses it to select the virtual display's 640x480 menu modes.
 - Sound comes out of one stereo 44.1 kHz device, with no input. The guest's
   Component Manager finds no components at all under cocaine (why is not
   known yet); the output units are supplied instead, but other components
@@ -45,19 +47,25 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
 - OpenGL games are held to 120 frames a second by default (`COCAINE_GL_FPS`). Past
   the screen's refresh, each
   frame only costs power, twice, since the guest's window server composites
-  each one. Even so, a game's window in 2x mode is enlarged by the emulated
-  window server every frame, which is most of what it costs while playing
+  each one. If experimental 2x UI drawing is explicitly enabled, a game's
+  window is enlarged by the emulated window server every frame, which was
+  most of what it cost while playing
   (about a quarter of a core on PowerPC, two fifths on Intel, for Marble
   Blast's 800 x 600).
 - Leopard's 2x drawing was never finished: Carbon programs that don't ask
   for it, Marble Blast among them, are drawn at 1x and enlarged, which looks
-  as it did before, only bigger. Dynamically linked SDL 1.2 games default to
-  1x too: their QuickDraw driver mixes point and pixel coordinates at 2x,
+  as it did before, only bigger. All programs now default to 1x; viewer-side
+  enlargement preserves coordinates but cannot add detail to bitmap artwork
+  or fonts. OpenGL still renders at guest drawable resolution, not at a
+  separate Retina resolution. SDL 1.2's QuickDraw driver mixes point and pixel
+  coordinates at 2x,
   which can leave software windows blank. Forcing COCAINE_UI_SCALE=2 can
-  bring this back; the default fixes Postal 2's startup warning. Postal 2
-  uses a smaller 1024x768 guest display and doubles pixels in the viewer
-  instead, enlarging the menu without enabling that broken drawing mode.
-- A default button's blue pulse stutters at the usual 2560 x 1600: measured
+  bring this back; the default fixes Postal 2's startup warning. Snes9x HQ!
+  uses a 1280x800 display with 1x UI scaling and doubled viewer pixels because
+  its game window is partly off-screen at 2x.
+  Postal 2 uses a smaller 1024x768 guest display and doubles pixels in the
+  viewer instead, enlarging the menu without enabling that broken drawing mode.
+- A default button's blue pulse stuttered at 2560 x 1600 with 2x UI drawing: measured
   on 2026-11-20 in VLC's Open Source dialog (PowerPC), the button gets a
   new picture about twice a second, in step with the text cursor's blink,
   where at `COCAINE_DISPLAY=1280x1024` it gets about thirty and pulses
@@ -65,16 +73,16 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   copy to the viewer isn't it; a hook on `CGXFlushWindow` changed nothing.
   The two runs differ in size and in 2x drawing (`COCAINE_UI_SCALE`), which
   weren't told apart; 2x is suspected, with the button redrawn only when the
-  main thread next wakes. Not looked into further.
+  main thread next wakes. The default is now 1x on a logical-sized display;
+  the original combination has not been rechecked.
 
 - Guest pages are 4 KB and Apple Silicon pages are 16 KB, so guest memory
   protections are tracked but not enforced. The exception is the zero page,
   which is arranged to have a host page to itself: null-pointer accesses
   fault as they should.
-- The kernel's own objects are only answered for the process they belong
-  to. A task port sent to another process is a real port there, and that
-  process can ask whose it is, but other calls made on it (reading another
-  process's memory, say) get no reply.
+- A task port sent to another process can answer some kernel calls, including
+  shared-memory mapping and `pid_for_task`, but not all of them (reading
+  another process's memory, for example).
 - IOKit has almost no devices: most searches come back empty. There is a
   power-management root that never announces sleep or wake, and an input
   system with one mouse and one keyboard's worth of events, fed from the
@@ -82,8 +90,9 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   registry entries needed for detection; raw disc commands, eject and media
   notifications are not emulated. No display device: the window server makes
   do with a virtual one.
-- The guest's display is one fixed window holding everything (2560 x 1600 unless
-  `COCAINE_DISPLAY` says otherwise),
+- The guest's display is one desktop in a host window (a conventional mode
+  fitting the host's logical desktop unless `COCAINE_DISPLAY` or a game
+  default says otherwise),
   with no pointer of its own drawn on it. Nobody is logged in to the guest
   system: the login window sets the session up and stops there.
 - The Intel translator leaves MMX, string moves, 16-bit operands and the
@@ -103,8 +112,10 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   doesn't work.
 - The daemons start afresh with each run that needs them, which costs a
   second or so every time.
-- One process can't get another's task port by process number
-  (`task_for_pid`); the security daemon asks and carries on without.
+- `task_for_pid` finds guest processes in the same session once they have
+  registered their task ports, and accepts only the caller's own task port
+  as its first argument. A spawned process may not have registered yet when
+  `posix_spawn` returns; an exec replaces its guest task port.
 - Each run of cocaine is a session of its own, with its own daemons: two
   apps started separately can't see each other.
 - A guest's own crash (a bad memory access, an illegal instruction) always

@@ -524,19 +524,19 @@ void Process::ensure_session_server() {
     struct {
       mach_msg_header_t h;
       mach_msg_body_t body;
-      mach_msg_port_descriptor_t ports[2];
+      mach_msg_port_descriptor_t ports[3];
     } reply = {};
     reply.h.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE, 0) | MACH_MSGH_BITS_COMPLEX;
     reply.h.msgh_size = sizeof reply;
     reply.h.msgh_remote_port = request.h.msgh_remote_port;
     reply.h.msgh_id = tunnel::kHandoffReply;
-    reply.body.msgh_descriptor_count = 2;
+    reply.body.msgh_descriptor_count = 3;
     reply.ports[0].name = bootstrap_port_;
     reply.ports[1].name = named;
-    for (auto& p : reply.ports) {
-      p.disposition = MACH_MSG_TYPE_MOVE_RECEIVE;
-      p.type = MACH_MSG_PORT_DESCRIPTOR;
-    }
+    reply.ports[2].name = task_port_;
+    reply.ports[0].disposition = reply.ports[1].disposition = MACH_MSG_TYPE_MOVE_RECEIVE;
+    reply.ports[2].disposition = MACH_MSG_TYPE_COPY_SEND;
+    for (auto& p : reply.ports) p.type = MACH_MSG_PORT_DESCRIPTOR;
     kr = ::mach_msg(&reply.h, MACH_SEND_MSG, sizeof reply, 0, MACH_PORT_NULL,
                     MACH_MSG_TIMEOUT_NONE, MACH_PORT_NULL);
   } else if (kr == KERN_SUCCESS) {

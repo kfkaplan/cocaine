@@ -1561,6 +1561,7 @@ void glTexCoord2f_(GuestCall& c) {
   const float s = c.f(), t = c.f();
   glTexCoord2f(s, t);
 }
+void glTexCoord2fv_(GuestCall& c) { glTexCoord2fv(Floats<2>(c, c.i()).v); }
 void glColor3f_(GuestCall& c) {
   const float r = c.f(), g = c.f(), b = c.f();
   glColor3f(r, g, b);
@@ -2023,7 +2024,8 @@ const HookSpec kGL[] = {
     H(glScalef), H(glRotatef), H(glOrtho), H(glFrustum), H(glClipPlane), H(glBegin), H(glEnd), H(glVertex2f),
     H(glNormal3f), H(glRasterPos2f), H(glBitmap), H(glGenLists), H(glNewList), H(glEndList),
     H(glCallList), H(glCallLists), H(glListBase), H(glDeleteLists),
-    H(glVertex2i), H(glVertex3f), H(glVertex2fv), H(glVertex3fv), H(glTexCoord2f), H(glColor3f), H(glColor4f),
+    H(glVertex2i), H(glVertex3f), H(glVertex2fv), H(glVertex3fv), H(glTexCoord2f), H(glTexCoord2fv),
+    H(glColor3f), H(glColor4f),
     H(glColor4fv), H(glColor3i), H(glColor3ub), H(glColor4ub), H(glColor3ubv), H(glColor4ubv), H(glRecti),
     H(glFogf), H(glFogi), H(glFogfv), H(glLightf), H(glLightfv), H(glLightModelfv), H(glMaterialfv),
     H(glTexEnvf), H(glTexEnvi), H(glTexEnvfv), H(glGetTexEnviv), H(glTexGeni), H(glTexGenfv), H(glGenTextures),

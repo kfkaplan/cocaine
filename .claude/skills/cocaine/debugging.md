@@ -16,7 +16,8 @@ environment variables, none of which change anything unless set:
 | `COCAINE_POKE=x,y,seconds` | short for a script that, after that long, clicks at x,y and types 8 and 9 |
 | `COCAINE_NOTE_INPUT=1` | for three seconds after each click or key, log every message the window server sends and receives, with times |
 | `COCAINE_VIEWER_SNAPSHOT=file.png` | have the viewer save what its window shows, twelve seconds in |
-| `COCAINE_VIEWER_DOUBLE=0` | show one screen pixel per guest pixel where it fits, instead of the default two (the launcher sets `1` for Ghost Recon Demo unless inherited) |
+| `COCAINE_VIEWER_SCALE=actual` | viewer sizing: `actual` is one guest pixel per Mac logical point, `integer` uses the largest whole physical-pixel scale fitting the window, `fit` scales proportionally. Also in the View menu (Command-1/2/3). Takes precedence over `COCAINE_VIEWER_DOUBLE` |
+| `COCAINE_VIEWER_DOUBLE=0` | legacy override: one physical screen pixel per guest pixel, or two with `1`, fitting down if necessary. Only applies when explicitly set; game-specific defaults are retained. The View menu clears this override for that viewer |
 | `COCAINE_NOTE_MSG=number,first-last` | log every process that sends one of those Mach requests, and the answer it gets |
 | `COCAINE_CALLS=address,address` | log each call a PowerPC guest makes to one of those addresses, with its arguments |
 | `COCAINE_WATCH=address` | log each PowerPC store of a word to that address, and the code that made it |
@@ -31,10 +32,10 @@ environment variables, none of which change anything unless set:
 | `COCAINE_NAN=1` | report the first places a PowerPC guest's floating point arithmetic makes a NaN out of numbers, with the inputs (interpreted, so slow) |
 | `COCAINE_GL_FRAME=n:file` | save OpenGL frame n, as cocaine read it back from the Mac's GPU, to `file` (raw, A R G B, bottom row first) |
 | `COCAINE_GL_FPS=60` | the most frames a second an OpenGL game is shown at (120 unless set; 0 for no limit) |
-| `COCAINE_DISPLAY=1280x1024` | the guest display's size (2560 x 1600 unless told otherwise; Postal 2 defaults to 1024 x 768 with doubled viewer pixels; the tests use 1280 x 1024) |
+| `COCAINE_DISPLAY=1280x1024` | the guest display's size (largest conventional mode fitting the host's available logical desktop, allowing room for the viewer's frame; 1280 x 800 with no screen). Resolved once and inherited by the session. Postal 2 keeps its 1024 x 768 default and Snes9x HQ! its 1280 x 800, with doubled viewer pixels; the launcher keeps Ghost Recon Demo at 800 x 600. Tests use 1280 x 1024 |
 | `COCAINE_WALLPAPER=path` | the guest's desktop picture, a JPEG or PNG on this Mac (`images/linen.jpeg` by default, else Leopard's `DefaultDesktop.jpg`); `none` leaves the window server's plain grey (see `src/kernel/wallpaper.cpp`) |
 | `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the guest's menu bar instead of cocaine's (a pile of powder, drawn in each logo's colour into a copy of Leopard's art file, `.cocaine/art/` in the system root; see `src/session/art.cpp`) |
-| `COCAINE_UI_SCALE=1` | how many times bigger Leopard draws everything (2 on a display 2560 or more wide, else 1; dynamically linked SDL 1.2 games default to 1 for QuickDraw compatibility). An explicit value overrides these defaults |
+| `COCAINE_UI_SCALE=2` | opt into Leopard's unfinished resolution-independent drawing (1 by default for all display sizes). Values from 1 to 3 override the default; larger-than-1 drawing can break QuickDraw/SDL coordinates and clip windows |
 | `COCAINE_AL_DUMP=dir` | write each buffer of sound a game hands OpenAL to `dir`, one raw file each, 16-bit samples in this Mac's byte order, named by order, buffer, format and rate (see `src/al/al.cpp`) |
 | `COCAINE_AL_TRACE=1` | log each OpenAL call that leaves an error, and the source, listener and buffer-name calls with their arguments |
 | `COCAINE_AUDIO_DUMP=file` | also write everything the guest plays to `file`, as raw 44.1 kHz stereo 32-bit floats |
@@ -74,6 +75,8 @@ from it on both CPUs and check their output. That includes a shell script
 (`tests/guest/procs.sh`) that exercises processes, pipes and signals, Python
 programs that use threads and fork from them, and `t_ipc`: two processes
 exchanging Mach messages with port rights and out-of-line memory in them.
+`task-for-pid.py` checks self and child task lookup, immediate post-fork
+lookup, exec, process exit, and rejection of processes outside the session.
 Three of Apple's daemons are tested through their clients: the guest system
 must know the person running the tests by name, and one program must hear a
 notification that another posts (`tests/guest/notify.sh`). And Calculator is

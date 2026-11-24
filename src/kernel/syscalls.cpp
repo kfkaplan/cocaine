@@ -412,8 +412,17 @@ SysRet Process::sys_fcntl(int fd, u32 cmd, u32 arg) {
       if (!mem_.copy_out(arg, g.c_str(), g.size() + 1)) return SysRet::err(EFAULT);
       return SysRet::ok();
     }
-    case 42:  // F_PREALLOCATE: reserving disk space ahead of time is only a hint
-      return SysRet::err(45);  // ENOTSUP
+    case 42: {  // F_PREALLOCATE
+      if (!mem_.range_ok(arg, 32)) return SysRet::err(EFAULT);
+      fstore_t store = {};
+      store.fst_flags = mem_.r32(arg);
+      store.fst_posmode = (int)mem_.r32(arg + 4);
+      store.fst_offset = (off_t)mem_.r64(arg + 8);
+      store.fst_length = (off_t)mem_.r64(arg + 16);
+      if (fcntl(fd, F_PREALLOCATE, &store) != 0) return SysRet::err(errno);
+      mem_.w64(arg + 24, (u64)store.fst_bytesalloc);
+      return SysRet::ok();
+    }
     case 7:
     case 8:
     case 9: {  // F_GETLK, F_SETLK, F_SETLKW: record locks, which databases live by

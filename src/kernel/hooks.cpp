@@ -197,6 +197,30 @@ std::vector<CodePatch> display_size_patches(bool powerpc, bool leopard_1056) {
     out.push_back({entry + 4, 1024, h});
     out.push_back({entry + 12, rows[k], now[k]});
   }
+  if (powerpc && leopard_1056) {
+    // The first three modes are 1x1 placeholders, not 640x480 modes.
+    // Reuse two unsupported 8-bit slots for RGB555 and 32-bit 640x480;
+    // keep the existing 800x600, 1024x768 and configured true-color modes.
+    const u32 encodings[2][8] = {
+        {0x2D525252, 0x52524747, 0x47474742, 0x42424242, 0, 0, 0, 0},
+        {0x2D2D2D2D, 0x2D2D2D2D, 0x52525252, 0x52525252,
+         0x47474747, 0x47474747, 0x42424242, 0x42424242}};
+    for (u32 k = 0; k < 2; k++) {
+      const u32 entry = table - (6 - 3 * k) * 0xC8;
+      out.push_back({entry, k ? 1024u : 800u, 640});
+      out.push_back({entry + 4, k ? 768u : 600u, 480});
+      out.push_back({entry + 8, 2, k ? 4u : 3u});
+      out.push_back({entry + 12, k ? 1088u : 832u, k ? 2560u : 1280u});
+      out.push_back({entry + 16, 8, k ? 32u : 16u});
+      out.push_back({entry + 20, 2, k ? 8u : 5u});
+      for (u32 word = 0; word < 8; word++) {
+        const u32 before = word < 2 ? 0x50505050 : 0;
+        if (before != encodings[k][word])
+          out.push_back({entry + 40 + word * 4, before, encodings[k][word]});
+      }
+      if (!k) out.push_back({entry + 184, 0x403, 0x407});
+    }
+  }
   return out;
 }
 constexpr const char* kCoreGraphics = "/CoreGraphics.framework/Versions/A/CoreGraphics";
@@ -284,7 +308,7 @@ void Process::note_code_mapping(u32 at, u32 len, int fd, u64 offset) {
   bool known_ppc_1056 = false;
   if (ends_with(img.path, kCoreGraphics) && read_image(img)) {
     u32 done = 0;
-    const size_t count = display_size_patches(powerpc, false).size();
+    size_t count = display_size_patches(powerpc, false).size();
     for (bool leopard_1056 : {false, true}) {
       const std::vector<CodePatch> patches = display_size_patches(powerpc, leopard_1056);
       bool matches = true;
@@ -296,6 +320,7 @@ void Process::note_code_mapping(u32 at, u32 len, int fd, u64 offset) {
         }
       }
       if (!matches) continue;
+      count = patches.size();
       for (const CodePatch& p : patches) {
         mem_.w32(p.addr + img.slide, p.replace);
         done++;
