@@ -134,6 +134,7 @@ struct ClientArrays {
 struct SurfaceFunctions {
   u32 window_context = 0, color_space = 0, provider = 0, image_create = 0, draw = 0, flush = 0;
   u32 release_context = 0, release_color = 0, release_provider = 0, release_image = 0, window_bounds = 0;
+  u32 display_context = 0;
 };
 
 struct Context {
@@ -144,6 +145,7 @@ struct Context {
   int width = 0, height = 0;
   u32 port = 0;
   u32 connection = 0, window = 0, surface = 0;
+  u32 display = 0;
   u32 surface_rect = 0, window_rect = 0, guest_frame = 0, guest_frame_size = 0;
   float surface_x = 0, surface_y = 0;
   SurfaceFunctions surface_functions;
@@ -870,7 +872,54 @@ void cglClearDrawable(GuestCall& c) {
   Context* x = context_of(c.i());
   if (!x) return c.ret(kCGLBadContext);
   x->connection = x->window = x->surface = 0;
+  x->display = 0;
   c.ret(kCGLNoError);
+}
+
+bool resize_to_display(GuestCall& c, Context* x) {
+  const u32 width = c.symbol("CGDisplayPixelsWide"), height = c.symbol("CGDisplayPixelsHigh");
+  if (!width || !height) {
+    say_once("OpenGL: cannot find captured display dimensions");
+    return false;
+  }
+  const u32 w = c.call(width, {x->display}), h = c.call(height, {x->display});
+  if (!w || !h || w > 16384 || h > 16384) {
+    log_warn("OpenGL: invalid captured display size %u x %u", w, h);
+    return false;
+  }
+  resize_context(x, (int)w, (int)h);
+  return true;
+}
+
+void set_full_screen(GuestCall& c, Context* x, u32 mask) {
+  if (!x) return c.ret(kCGLBadContext);
+  const u32 main_display = c.symbol("CGMainDisplayID"), display_mask = c.symbol("CGDisplayIDToOpenGLDisplayMask");
+  if (!main_display || !display_mask) {
+    say_once("OpenGL: cannot find the guest fullscreen display");
+    return c.ret(kCGLBadDisplay);
+  }
+  const u32 display = c.call(main_display, {});
+  if (mask && mask != c.call(display_mask, {display})) return c.ret(kCGLBadDisplay);
+  const u32 previous = x->display;
+  x->display = display;
+  if (!resize_to_display(c, x)) {
+    x->display = previous;
+    return c.ret(kCGLBadDrawable);
+  }
+  x->connection = x->window = x->surface = 0;
+  c.ret(kCGLNoError);
+}
+
+void cglSetFullScreen(GuestCall& c) {
+  Context* x = context_of(c.i());
+  set_full_screen(c, x, 0);
+}
+
+void cglSetFullScreenOnDisplay(GuestCall& c) {
+  Context* x = context_of(c.i());
+  const u32 mask = c.i();
+  if (!mask) return c.ret(x ? kCGLBadDisplay : kCGLBadContext);
+  set_full_screen(c, x, mask);
 }
 
 bool resize_to_surface(GuestCall& c, Context* x) {
@@ -904,7 +953,7 @@ bool resize_to_surface(GuestCall& c, Context* x) {
 }
 
 bool present_surface(GuestCall& c, Context* x) {
-  if (!x->window || !x->surface || !x->fbo) {
+  if ((!x->display && (!x->window || !x->surface)) || !x->fbo) {
     say_once("OpenGL: Cocoa context has no drawable");
     return false;
   }
@@ -922,9 +971,10 @@ bool present_surface(GuestCall& c, Context* x) {
     found.release_provider = c.symbol("CGDataProviderRelease");
     found.release_image = c.symbol("CGImageRelease");
     found.window_bounds = c.symbol("CGSGetWindowBounds");
+    found.display_context = c.symbol("CGDisplayGetDrawingContext");
     if (!found.window_context || !found.color_space || !found.provider || !found.image_create ||
         !found.draw || !found.flush || !found.release_context || !found.release_color ||
-        !found.release_provider || !found.release_image || !found.window_bounds) {
+        !found.release_provider || !found.release_image || !found.window_bounds || !found.display_context) {
       say_once("OpenGL: cannot find CoreGraphics functions for a Cocoa surface");
       return false;
     }
@@ -950,14 +1000,18 @@ bool present_surface(GuestCall& c, Context* x) {
     memcpy(c.mem.host(x->guest_frame) + (size_t)y * row,
            x->frame.data() + (size_t)(x->height - 1 - y) * row, row);
 
-  if (!x->window_rect) x->window_rect = c.scratch(16);
-  const u32 bounds = x->window_rect;
-  if (!bounds || c.call(fn.window_bounds, {x->connection, x->window, bounds})) {
-    say_once("OpenGL: cannot get Cocoa window bounds");
-    return false;
+  float window_height = (float)x->height;
+  if (!x->display) {
+    if (!x->window_rect) x->window_rect = c.scratch(16);
+    const u32 bounds = x->window_rect;
+    if (!bounds || c.call(fn.window_bounds, {x->connection, x->window, bounds})) {
+      say_once("OpenGL: cannot get Cocoa window bounds");
+      return false;
+    }
+    window_height = rdf(gp(c, bounds) + 12);
   }
-  const float window_height = rdf(gp(c, bounds) + 12);
-  const u32 ctx = c.call(fn.window_context, {x->connection, x->window, 0});
+  const u32 ctx = x->display ? c.call(fn.display_context, {x->display})
+                             : c.call(fn.window_context, {x->connection, x->window, 0});
   const u32 space = c.call(fn.color_space, {});
   const u32 source = c.call(fn.provider, {0, x->guest_frame, (u32)bytes, 0});
   u32 image = 0;
@@ -969,7 +1023,8 @@ bool present_surface(GuestCall& c, Context* x) {
   }
   if (image) {
     auto bits = [](float value) { u32 word; memcpy(&word, &value, 4); return word; };
-    c.call(fn.draw, {ctx, bits(x->surface_x), bits(window_height - x->surface_y - x->height),
+    c.call(fn.draw, {ctx, bits(x->display ? 0 : x->surface_x),
+                  bits(x->display ? 0 : window_height - x->surface_y - x->height),
                   bits((float)x->width), bits((float)x->height), image});
     c.call(fn.flush, {ctx});
   } else {
@@ -978,8 +1033,10 @@ bool present_surface(GuestCall& c, Context* x) {
   if (image) c.call(fn.release_image, {image});
   if (source) c.call(fn.release_provider, {source});
   if (space) c.call(fn.release_color, {space});
-  if (ctx) c.call(fn.release_context, {ctx});
-  if (image) frame_shown(x, "Cocoa ");
+  // CGDisplayGetDrawingContext lends the display's context; only window
+  // contexts created above belong to us.
+  if (ctx && !x->display) c.call(fn.release_context, {ctx});
+  if (image) frame_shown(x, x->display ? "fullscreen " : "Cocoa ");
   return image != 0;
 }
 
@@ -990,6 +1047,7 @@ void cglSetSurface(GuestCall& c) {
   x->connection = connection;
   x->window = window;
   x->surface = surface;
+  x->display = 0;
   log_debug("CGLSetSurface: connection 0x%x window 0x%x surface 0x%x", connection, window, surface);
   c.ret(resize_to_surface(c, x) ? kCGLNoError : kCGLBadDrawable);
 }
@@ -997,6 +1055,7 @@ void cglSetSurface(GuestCall& c) {
 void cglUpdateContext(GuestCall& c) {
   Context* x = context_of(c.i());
   if (!x) return c.ret(kCGLBadContext);
+  if (x->display) return c.ret(resize_to_display(c, x) ? kCGLNoError : kCGLBadDrawable);
   c.ret(!x->surface || resize_to_surface(c, x) ? kCGLNoError : kCGLBadDrawable);
 }
 
@@ -1151,6 +1210,15 @@ void glClearColor_(GuestCall& c) {
 void glViewport_(GuestCall& c) {
   const s32 x = (s32)c.i(), y = (s32)c.i(), w = (s32)c.i(), h = (s32)c.i();
   glViewport(x, y, w, h);
+}
+void glScissor_(GuestCall& c) {
+  const GLint x = (GLint)c.i(), y = (GLint)c.i();
+  const GLsizei w = (GLsizei)c.i(), h = (GLsizei)c.i();
+  glScissor(x, y, w, h);
+}
+void glColorMaterial_(GuestCall& c) {
+  const GLenum face = c.i(), mode = c.i();
+  glColorMaterial(face, mode);
 }
 void glBlendFunc_(GuestCall& c) {
   const GLenum s = c.i(), d = c.i();
@@ -1738,11 +1806,8 @@ void glDrawArrays_(GuestCall& c) {
   prepare_arrays(c, (u32)first, (u32)(first + count - 1));
   glDrawArrays(mode, first, count);
 }
-void glDrawElements_(GuestCall& c) {
-  const GLenum mode = c.i();
-  const GLsizei count = (GLsizei)c.i();
-  const GLenum type = c.i();
-  const u8* in = gp(c, c.i());
+void draw_elements(GuestCall& c, GLenum mode, GLsizei count, GLenum type, u32 indices) {
+  const u8* in = gp(c, indices);
   if (count <= 0 || !in) return;
   static thread_local std::vector<GLuint> idx;
   idx.resize((size_t)count);
@@ -1755,6 +1820,22 @@ void glDrawElements_(GuestCall& c) {
   }
   prepare_arrays(c, lo, hi);
   glDrawElements(mode, count, GL_UNSIGNED_INT, idx.data());
+}
+void glDrawElements_(GuestCall& c) {
+  const GLenum mode = c.i();
+  const GLsizei count = (GLsizei)c.i();
+  const GLenum type = c.i();
+  const u32 indices = c.i();
+  draw_elements(c, mode, count, type, indices);
+}
+void glDrawRangeElements_(GuestCall& c) {
+  const GLenum mode = c.i();
+  c.i();  // The range is only a hint; draw_elements finds the actual bounds.
+  c.i();
+  const GLsizei count = (GLsizei)c.i();
+  const GLenum type = c.i();
+  const u32 indices = c.i();
+  draw_elements(c, mode, count, type, indices);
 }
 // One element of each enabled array, as immediate mode would give it.
 void glArrayElement_(GuestCall& c) {
@@ -1813,6 +1894,7 @@ const HookSpec kGL[] = {
     {"CGLGetCurrentContext", cglGetCurrentContext},
     H(glEnable), H(glDisable), H(glDepthRange), H(glClearDepth), H(glLightModeli), H(glMaterialf),
     H(glPointSize), H(glShadeModel), H(glIsEnabled), H(glClear), H(glClearColor), H(glViewport), H(glBlendFunc),
+    H(glScissor), H(glColorMaterial),
     H(glAlphaFunc), H(glCullFace), H(glFrontFace), H(glDepthFunc), H(glDepthMask), H(glColorMask),
     H(glStencilFunc), H(glStencilMask), H(glStencilOp), H(glPolygonMode), H(glPolygonOffset), H(glLineWidth),
     H(glHint), H(glPushAttrib), H(glPopAttrib), H(glPushClientAttrib), H(glPopClientAttrib),
@@ -1829,7 +1911,8 @@ const HookSpec kGL[] = {
     H(glDeleteTextures), H(glBindTexture), H(glTexParameteri), H(glTexParameterf), H(glTexImage2D),
     H(glTexSubImage2D), H(glReadPixels), H(glActiveTextureARB), H(glVertexPointer), H(glNormalPointer),
     H(glColorPointer), H(glTexCoordPointer), H(glEnableClientState), H(glDisableClientState),
-    H(glClientActiveTextureARB), H(glDrawArrays), H(glDrawElements), H(glArrayElement), H(glLockArraysEXT),
+    H(glClientActiveTextureARB), H(glDrawArrays), H(glDrawElements), H(glDrawRangeElements),
+    {"glDrawRangeElementsEXT", glDrawRangeElements_}, H(glArrayElement), H(glLockArraysEXT),
     H(glUnlockArraysEXT),
 };
 #undef H
@@ -1876,6 +1959,8 @@ const HookSpec kCGL[] = {
     {"CGLRetainContext", cglRetainContext},
     {"CGLReleaseContext", cglReleaseContext},
     {"CGLClearDrawable", cglClearDrawable},
+    {"CGLSetFullScreen", cglSetFullScreen},
+    {"CGLSetFullScreenOnDisplay", cglSetFullScreenOnDisplay},
     {"CGLSetSurface", cglSetSurface},
     {"CGLUpdateContext", cglUpdateContext},
     {"CGLSetParameter", cglSetParameter},

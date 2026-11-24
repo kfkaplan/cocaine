@@ -15,6 +15,7 @@
 #include "macho/macho.h"
 #include "mem/guest_memory.h"
 #include "session/session.h"
+#include "session/ui_scale.h"
 #include "viewer/viewer.h"
 
 extern char** environ;
@@ -251,6 +252,10 @@ int main(int argc, char** argv) {
   if (info_only) {
     print_info(exe);
     return 0;
+  }
+  if (!configure_legacy_ui_scale(exe.dylibs, err)) {
+    std::fprintf(stderr, "cocaine: %s\n", err.c_str());
+    return 126;
   }
 
   GuestMemory mem;

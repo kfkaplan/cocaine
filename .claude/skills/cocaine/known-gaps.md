@@ -33,8 +33,9 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   CGL and GLU calls, and OpenAL 1.1's playback calls. Another game will want others, which
   announce themselves on the first call ("... is not passed through to the
   Mac yet"). AGL and CGL pixel-format requests are logged but not enforced: the
-  existing fixed accelerated format is used instead. Full screen
-  (`aglSetFullScreen`) isn't done, so games have to
+  existing fixed accelerated format is used instead. CGL fullscreen draws
+  into the captured guest display (Postal 2's animated intro and menu render).
+  AGL fullscreen (`aglSetFullScreen`) isn't done, so AGL games have to
   be set to play in a window. DrawSprocket still runs as guest code and
   does nothing useful.
 - Sound comes out of one stereo 44.1 kHz device, with no input. The guest's
@@ -51,7 +52,10 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   Blast's 800 x 600).
 - Leopard's 2x drawing was never finished: Carbon programs that don't ask
   for it, Marble Blast among them, are drawn at 1x and enlarged, which looks
-  as it did before, only bigger.
+  as it did before, only bigger. Dynamically linked SDL 1.2 games default to
+  1x too: their QuickDraw driver mixes point and pixel coordinates at 2x,
+  which can leave software windows blank. Forcing COCAINE_UI_SCALE=2 can
+  bring this back; the default fixes Postal 2's startup warning.
 - A default button's blue pulse stutters at the usual 2560 x 1600: measured
   on 2026-11-20 in VLC's Open Source dialog (PowerPC), the button gets a
   new picture about twice a second, in step with the text cursor's blink,

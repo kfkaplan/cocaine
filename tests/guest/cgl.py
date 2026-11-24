@@ -1,4 +1,5 @@
 import ctypes
+import sys
 
 cgl = ctypes.CDLL("/System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL")
 gl = ctypes.CDLL("/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib")
@@ -19,6 +20,10 @@ cgl.CGLRetainContext.restype = uint
 cgl.CGLReleaseContext.argtypes = [uint]
 cgl.CGLDestroyContext.argtypes = [uint]
 cgl.CGLSetParameter.argtypes = [uint, uint, intp]
+cgl.CGLSetFullScreen.argtypes = [uint]
+cgl.CGLSetFullScreenOnDisplay.argtypes = [uint, uint]
+cgl.CGLClearDrawable.argtypes = [uint]
+cgl.CGLFlushDrawable.argtypes = [uint]
 gl.CGLSetCurrentContext.argtypes = [uint]
 gl.CGLGetCurrentContext.restype = uint
 gl.glMatrixMode.argtypes = [uint]
@@ -34,6 +39,11 @@ gl.glClear.argtypes = [uint]
 gl.glCallLists.argtypes = [ctypes.c_int, uint, ctypes.c_void_p]
 gl.glListBase.argtypes = [uint]
 gl.glReadPixels.argtypes = [ctypes.c_int] * 4 + [uint, uint, ctypes.c_void_p]
+gl.glViewport.argtypes = [ctypes.c_int] * 4
+gl.glScissor.argtypes = [ctypes.c_int] * 4
+gl.glColor4f.argtypes = [ctypes.c_float] * 4
+gl.glVertexPointer.argtypes = [ctypes.c_int, uint, ctypes.c_int, ctypes.c_void_p]
+gl.glDrawRangeElements.argtypes = [uint, uint, uint, ctypes.c_int, uint, ctypes.c_void_p]
 glu.gluPerspective.argtypes = [ctypes.c_double] * 4
 glu.gluNewQuadric.restype = uint
 glu.gluDeleteQuadric.argtypes = [uint]
@@ -100,6 +110,63 @@ gl.glCallLists(1, 0x1403, indices)
 pixel = (ctypes.c_ubyte * 4)()
 gl.glReadPixels(0, 0, 1, 1, 0x1908, 0x1401, pixel)
 assert tuple(pixel) == (255, 0, 0, 255), tuple(pixel)
+
+cg = ctypes.CDLL("/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics")
+cg.CGMainDisplayID.restype = uint
+cg.CGDisplayIDToOpenGLDisplayMask.argtypes = [uint]
+cg.CGDisplayIDToOpenGLDisplayMask.restype = uint
+cg.CGDisplayCapture.argtypes = [uint]
+cg.CGDisplayRelease.argtypes = [uint]
+cg.CGDisplayBaseAddress.argtypes = [uint]
+cg.CGDisplayBaseAddress.restype = ctypes.c_void_p
+cg.CGDisplayBytesPerRow.argtypes = [uint]
+cg.CGDisplayPixelsWide.argtypes = [uint]
+cg.CGDisplayPixelsHigh.argtypes = [uint]
+display = cg.CGMainDisplayID()
+assert cg.CGDisplayCapture(display) == 0
+try:
+    assert cgl.CGLSetFullScreen(0) == 10004
+    assert cgl.CGLSetFullScreenOnDisplay(ctx, 0) == 10006
+    assert cgl.CGLSetFullScreen(ctx) == 0
+    mask = cg.CGDisplayIDToOpenGLDisplayMask(display)
+    assert cgl.CGLSetFullScreenOnDisplay(ctx, mask) == 0
+    gl.glViewport(0, 0, 16, 16)
+    gl.glClearColor(1.0, 0.0, 0.0, 1.0)
+    gl.glClear(0x4000)
+    gl.glEnable(0x0c11)
+    gl.glScissor(0, 0, 1, 1)
+    gl.glClearColor(0.0, 1.0, 0.0, 1.0)
+    gl.glClear(0x4000)
+    gl.glReadPixels(0, 0, 1, 1, 0x1908, 0x1401, pixel)
+    assert tuple(pixel) == (0, 255, 0, 255), tuple(pixel)
+    gl.glReadPixels(2, 2, 1, 1, 0x1908, 0x1401, pixel)
+    assert tuple(pixel) == (255, 0, 0, 255), tuple(pixel)
+    gl.glDisable(0x0c11)
+    gl.glMatrixMode(0x1701)
+    gl.glLoadIdentity()
+    gl.glMatrixMode(0x1700)
+    gl.glLoadIdentity()
+    vertices = (ctypes.c_float * 6)(-1, -1, 3, -1, -1, 3)
+    elements = (ctypes.c_ushort * 3)(0, 1, 2)
+    gl.glVertexPointer(2, 0x1406, 0, vertices)
+    gl.glEnableClientState(0x8074)
+    gl.glColor4f(0.0, 0.0, 1.0, 1.0)
+    gl.glDrawRangeElements(4, 0, 2, 3, 0x1403, elements)
+    gl.glReadPixels(8, 8, 1, 1, 0x1908, 0x1401, pixel)
+    assert tuple(pixel) == (0, 0, 255, 255), tuple(pixel)
+    assert gl.glGetError() == 0
+    assert cgl.CGLFlushDrawable(ctx) == 0
+    width = cg.CGDisplayPixelsWide(display)
+    height = cg.CGDisplayPixelsHigh(display)
+    stride = cg.CGDisplayBytesPerRow(display)
+    base = cg.CGDisplayBaseAddress(display)
+    shown = ctypes.string_at(base + (height // 2) * stride + (width // 2) * 4, 4)
+    rgb = shown[1:4] if sys.byteorder == "big" else shown[2::-1]
+    assert rgb == "\xff\x00\x00", repr(shown)
+    assert cgl.CGLClearDrawable(ctx) == 0
+    assert cgl.CGLFlushDrawable(ctx) == 10005
+finally:
+    assert cg.CGDisplayRelease(display) == 0
 assert gl.CGLSetCurrentContext(0) == 0
 assert cgl.CGLDestroyContext(ctx) == 0
 assert cgl.CGLDestroyContext(ctx) == 10004

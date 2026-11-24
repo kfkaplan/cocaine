@@ -244,7 +244,22 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   connects the offscreen framebuffer to the window server's surface bounds,
   and at `CGLFlushDrawable` draws the read-back pixels into the guest window
   through its CoreGraphics window context. GL Golf uses this path and GLU's
-  quadrics, mipmaps, and perspective functions. CGL pixel format requests,
+  quadrics, mipmaps, and perspective functions. CGL fullscreen contexts use
+  the captured guest display's dimensions and borrowed
+  `CGDisplayGetDrawingContext` instead, drawing the same read-back image at
+  the display's origin. Clearing or replacing the drawable leaves fullscreen;
+  no host display is captured or switched. Postal 2 uses this path, together
+  with scissor clipping, color material and range-indexed drawing (which
+  shares the ordinary indexed draw's guest-array conversion).
+  Before starting guest code, programs linked to SDL 1.2 get a default
+  `COCAINE_UI_SCALE=1`. SDL's old QuickDraw driver locates its software
+  pixels by subtracting a view's point frame from its window's pixel frame.
+  At 2x that puts Postal 2's warning bitmap 385 rows into the backing store,
+  while its flush covers the first 384 rows: a blank part of the window.
+  Keeping these programs at 1x makes the coordinates agree, without changing
+  their OpenGL display modes or other programs' usual scaling. An explicit
+  `COCAINE_UI_SCALE` still takes precedence.
+  CGL pixel format requests,
   like AGL's, are not yet enforced. Those
   QuickDraw calls are guest functions, run from native code
   (`Process::call_guest`): a fresh stack frame, a return address that

@@ -15,10 +15,11 @@ The guest system's screen appears in a window on your Mac.
 
 - **Apps with windows, on both CPUs -** Calculator, VLC 0.9.10, Transmission 1.54 and others run
   on Leopard's own window server, with the mouse, keyboard and scroll wheel.
-  The display is drawn at twice the pixels, so it looks sharp on a Retina
+  Most apps are drawn at twice the pixels, so they look sharp on a Retina
   screen.
 - **Games -** Marble Blast Gold (both halves of the universal build) plays at
   60 frames a second with music and sound; GL Golf draws its course.
+  Postal 2 draws its startup warning, animated intro and menu.
   OpenGL and OpenAL calls go to your Mac's own graphics and sound.
 - **Sound -** VLC plays MP3s through your Mac's speakers.
 - **Mounted disk images -** browsable images mounted under `/Volumes` are
