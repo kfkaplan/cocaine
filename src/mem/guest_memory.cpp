@@ -265,6 +265,18 @@ u32 GuestMemory::find_free(u64 size, u32 lo, u64 hi, u64 align) const {
       return (u32)(start * kPageSize);
     }
     start = (blocked + 1 + step - 1) / step * step;
+    if (step == 1 && start + need <= end && (pages_[start] & (kMapped | kShared | kReserved))) {
+      // Fold the shared and reserved bits down onto the mapped bit in each
+      // byte. If all eight are occupied, no first-fit candidate starts there.
+      static_assert(kMapped == 0x10 && kShared == 0x40 && kReserved == 0x80);
+      constexpr u64 mapped_bits = 0x1010101010101010ull;
+      while (start + need <= end && start + sizeof(u64) <= end) {
+        u64 flags;
+        memcpy(&flags, pages_.data() + start, sizeof flags);
+        if (((flags | (flags >> 2) | (flags >> 3)) & mapped_bits) != mapped_bits) break;
+        start += sizeof flags;
+      }
+    }
   }
   return 0;
 }

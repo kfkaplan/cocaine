@@ -31,19 +31,20 @@ struct Architectures: OptionSet {
   static let powerpc = Architectures(rawValue: 1)
   static let intel = Architectures(rawValue: 2)
   static let modern = Architectures(rawValue: 4)  // 64-bit only: not for cocaine
+  static let classicPEF = Architectures(rawValue: 8)
 
   var description: String {
     var names: [String] = []
-    if contains(.powerpc) { names.append("PowerPC") }
+    if contains(.powerpc) { names.append(contains(.classicPEF) ? "PowerPC (PEF/CFM)" : "PowerPC") }
     if contains(.intel) { names.append("32-bit Intel") }
     if contains(.modern) { names.append("64-bit") }
     return names.isEmpty ? "nothing cocaine can run" : names.joined(separator: " and ")
   }
 
-  /// Read from the program's Mach-O header (for an app, its main program's).
+  /// Read the program's Mach-O or PowerPC PEF header (for an app, its main program's).
   static func of(_ url: URL) -> Architectures {
     var exe = url
-    if url.pathExtension.lowercased() == "app", let bundle = Bundle(url: url), let main = bundle.executableURL {
+    if let bundle = Bundle(url: url), let main = bundle.executableURL {
       exe = main
     }
     guard let handle = try? FileHandle(forReadingFrom: exe) else { return [] }
@@ -62,6 +63,10 @@ struct Architectures: OptionSet {
       case 0x0100_0012, 0x0100_0007, 0x0100_000C: return .modern
       default: return []
       }
+    }
+    if head.count >= 40, be32(0) == 0x4A6F_7921, be32(4) == 0x7065_6666,
+       be32(8) == 0x7077_7063, be32(12) == 1, (head[32] != 0 || head[33] != 0) {
+      return [.powerpc, .classicPEF]
     }
     switch be32(0) {
     case 0xCAFE_BABE:  // universal: a list of 20-byte entries
@@ -346,6 +351,28 @@ final class AppModel: ObservableObject {
 
   // MARK: Running
 
+  static func isGhostReconDemo(_ target: URL) -> Bool {
+    let enclosing = target.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    guard let bundle = Bundle(url: target) ?? Bundle(url: enclosing),
+          bundle.bundleIdentifier == "com.aspyr.ghostrecon",
+          bundle.object(forInfoDictionaryKey: "CFBundleName") as? String == "Ghost Recon Demo",
+          let executable = bundle.executableURL else { return false }
+    let selected = target.standardizedFileURL.resolvingSymlinksInPath()
+    let app = bundle.bundleURL.standardizedFileURL.resolvingSymlinksInPath()
+    let main = executable.standardizedFileURL.resolvingSymlinksInPath()
+    return selected == app || selected == main
+  }
+
+  static func displayForRun(_ target: URL, inherited: [String: String]) -> String? {
+    guard inherited["COCAINE_DISPLAY"] == nil, isGhostReconDemo(target) else { return nil }
+    return "800x600"
+  }
+
+  static func viewerDoubleForRun(_ target: URL, inherited: [String: String]) -> String? {
+    guard inherited["COCAINE_VIEWER_DOUBLE"] == nil, isGhostReconDemo(target) else { return nil }
+    return "1"
+  }
+
   func run() async {
     guard let target, !running, isReady else { return }
     remember(target)
@@ -354,7 +381,16 @@ final class AppModel: ObservableObject {
     runLog.add("cocaine \(args.joined(separator: " "))")
     running = true
     stopPressed = false
-    let command = RunningCommand(binaryPath, args, environment: ["COCAINE_SYSROOT": sysrootPath])
+    var environment = ["COCAINE_SYSROOT": sysrootPath]
+    if let display = Self.displayForRun(target, inherited: Shell.environment) {
+      environment["COCAINE_DISPLAY"] = display
+      runLog.add("Using an 800 x 600 display for Ghost Recon Demo...")
+    }
+    if let doublePixels = Self.viewerDoubleForRun(target, inherited: Shell.environment) {
+      environment["COCAINE_VIEWER_DOUBLE"] = doublePixels
+      runLog.add("Doubling the display pixels for Ghost Recon Demo...")
+    }
+    let command = RunningCommand(binaryPath, args, environment: environment)
     runCommand = command
     let log = runLog
     let status = await command.run { log.add($0) }

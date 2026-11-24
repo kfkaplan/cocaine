@@ -15,6 +15,7 @@
 #include "macho/macho.h"
 #include "mem/guest_memory.h"
 #include "session/session.h"
+#include "session/ui_scale.h"
 #include "viewer/viewer.h"
 
 extern char** environ;
@@ -47,12 +48,20 @@ bool is_dir(const std::string& p) {
 
 // Finds the program inside an application bundle, using the bundle's
 // Info.plist and falling back to the bundle's own name.
-std::string bundle_executable(const std::string& dir) {
+std::string bundle_executable(const std::string& dir, std::string* bundle_id = nullptr) {
   std::string name;
   CFURLRef url = CFURLCreateFromFileSystemRepresentation(nullptr, (const UInt8*)dir.c_str(),
                                                          (CFIndex)dir.size(), true);
   if (url) {
     if (CFDictionaryRef info = CFBundleCopyInfoDictionaryInDirectory(url)) {
+      if (bundle_id) {
+        const void* identifier = CFDictionaryGetValue(info, CFSTR("CFBundleIdentifier"));
+        char id[PATH_MAX];
+        if (identifier && CFGetTypeID(identifier) == CFStringGetTypeID() &&
+            CFStringGetCString((CFStringRef)identifier, id, sizeof id, kCFStringEncodingUTF8)) {
+          *bundle_id = id;
+        }
+      }
       const void* v = CFDictionaryGetValue(info, CFSTR("CFBundleExecutable"));
       char buf[PATH_MAX];
       if (v && CFGetTypeID(v) == CFStringGetTypeID() &&
@@ -207,16 +216,48 @@ int main(int argc, char** argv) {
   }
 
   std::string target = argv[i];
-  if (is_dir(target)) target = bundle_executable(target);
+  std::string bundle_id;
+  if (is_dir(target)) target = bundle_executable(target, &bundle_id);
   char resolved[PATH_MAX];
   if (!realpath(target.c_str(), resolved)) {
     std::fprintf(stderr, "cocaine: %s: %s\n", target.c_str(), strerror(errno));
     return 127;
   }
+  if (bundle_id.empty()) {
+    const std::string path = resolved;
+    const size_t app = path.rfind(".app/");
+    if (app != std::string::npos) bundle_executable(path.substr(0, app + 4), &bundle_id);
+  }
 
   std::string err;
   MachImage exe;
-  if (prefer && !want && load_macho(resolved, prefer, exe, err)) {
+  u8 header[40];
+  size_t header_size = 0;
+  if (FILE* f = std::fopen(resolved, "rb")) {
+    header_size = std::fread(header, 1, sizeof header, f);
+    std::fclose(f);
+  }
+  const bool pef = is_powerpc_pef(header, header_size);
+  std::string launcher;
+  if (pef) {
+    if (want && *want == Arch::I386) {
+      std::fprintf(stderr, "cocaine: %s: is a PowerPC PEF/CFM file, not i386\n", resolved);
+      return 126;
+    }
+    if (info_only) {
+      std::printf("%s\n  architecture: ppc (big-endian)\n  kind:         PowerPC PEF/CFM\n", resolved);
+      return 0;
+    }
+    if (opt.sysroot.empty()) {
+      std::fprintf(stderr, "cocaine: PowerPC PEF/CFM programs need a Leopard system root\n");
+      return 126;
+    }
+    launcher = opt.sysroot + "/System/Library/Frameworks/Carbon.framework/Versions/A/Support/LaunchCFMApp";
+    if (!load_macho(launcher, Arch::PPC, exe, err)) {
+      std::fprintf(stderr, "cocaine: cannot load Leopard's LaunchCFMApp: %s\n", err.c_str());
+      return 126;
+    }
+  } else if (prefer && !want && load_macho(resolved, prefer, exe, err)) {
     // Loaded the preferred half.
   } else if (!load_macho(resolved, want, exe, err)) {
     std::fprintf(stderr, "cocaine: %s\n", err.c_str());
@@ -226,6 +267,10 @@ int main(int argc, char** argv) {
     print_info(exe);
     return 0;
   }
+  if (!configure_legacy_ui_scale(exe.dylibs, err, bundle_id)) {
+    std::fprintf(stderr, "cocaine: %s\n", err.c_str());
+    return 126;
+  }
 
   GuestMemory mem;
   if (!mem.init(exe.big_endian, err)) {
@@ -233,7 +278,16 @@ int main(int argc, char** argv) {
     return 126;
   }
 
-  std::vector<std::string> guest_argv{resolved};
+  std::vector<std::string> guest_argv;
+  if (pef) {
+    std::string guest_target = resolved;
+    if (guest_target.size() > opt.sysroot.size() &&
+        guest_target.compare(0, opt.sysroot.size(), opt.sysroot) == 0 &&
+        guest_target[opt.sysroot.size()] == '/') guest_target.erase(0, opt.sysroot.size());
+    guest_argv = {launcher, guest_target};
+  } else {
+    guest_argv = {resolved};
+  }
   for (int k = i + 1; k < argc; k++) guest_argv.push_back(argv[k]);
   // The guest inherits this environment, minus the DYLD_ variables: those
   // steer this Mac's dynamic linker and name libraries the guest can't load.

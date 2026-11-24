@@ -25,18 +25,23 @@
 
 #define GL_SILENCE_DEPRECATION 1
 
+#include <CoreGraphics/CoreGraphics.h>
 #include <OpenGL/OpenGL.h>
 #include <OpenGL/gl.h>
 #include <OpenGL/glext.h>
+#include <OpenGL/glu.h>
 
 #include <cmath>
 #include <ctime>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "gl/vertex_copy.h"
+#include "kernel/display_pixels.h"
 #include "kernel/hooks.h"
 #include "kernel/process.h"
 
@@ -119,24 +124,72 @@ struct Array {
   std::vector<u8> host;
 };
 
+struct ClientArrays {
+  Array vertex, normal, color;
+  Array tex[8];
+  int unit = 0;
+  GLbitfield mask = 0;
+  bool unpack_swap = false, pack_swap = false;
+};
+
+struct SurfaceFunctions {
+  u32 window_context = 0, color_space = 0, provider = 0, image_create = 0, draw = 0, flush = 0;
+  u32 release_context = 0, release_color = 0, release_provider = 0, release_image = 0, window_bounds = 0;
+  u32 display_context = 0;
+};
+
 struct Context {
   u32 handle = 0;
+  u32 refs = 1;
   CGLContextObj cgl = nullptr;
   GLuint fbo = 0, color = 0, depth = 0;
   int width = 0, height = 0;
   u32 port = 0;
+  u32 connection = 0, window = 0, surface = 0;
+  u32 display = 0;
+  u32 surface_rect = 0, window_rect = 0, guest_frame = 0, guest_frame_size = 0;
+  float surface_x = 0, surface_y = 0;
+  SurfaceFunctions surface_functions;
   bool unpack_swap = false, pack_swap = false;  // what the guest asked for
   Array vertex, normal, color_array;
   Array tex[8];
   int client_unit = 0;
+  std::vector<ClientArrays> client_stack;
   std::vector<u8> frame;
   u32 frames = 0;
 };
 
 std::mutex g_mu;
 std::unordered_map<u32, Context*> g_contexts;
+struct PixelFormat {
+  CGLPixelFormatObj cgl = nullptr;
+  u32 refs = 1;
+};
+std::unordered_map<u32, PixelFormat> g_formats;
 u32 g_next_handle = 0x00C0C000;
 thread_local Context* t_current = nullptr;
+thread_local CGLError t_agl_error = kCGLNoError;
+
+struct RendererQuery {
+  CGLRendererInfoObj info = nullptr;
+  std::vector<u32> handles;
+  ~RendererQuery() {
+    if (info) {
+      const CGLError error = CGLDestroyRendererInfo(info);
+      if (error != kCGLNoError) log_warn("OpenGL: cannot release renderer information (%d)", (int)error);
+    }
+  }
+};
+struct RendererEntry {
+  std::shared_ptr<RendererQuery> query;
+  GLint index;
+};
+std::unordered_map<u32, RendererEntry> g_renderers;
+
+void agl_error(CGLError error, const char* operation) {
+  t_agl_error = error;
+  if (error != kCGLNoError) log_warn("OpenGL: %s failed (%d)", operation, (int)error);
+}
 
 std::vector<std::string> g_said;
 void say_once(const std::string& what) {
@@ -194,9 +247,7 @@ bool port_size(GuestCall& c, u32 port, int& w, int& h) {
   return w > 0 && h > 0;
 }
 
-// The frame, into the guest window's pixels, and onto the screen.
-void present(GuestCall& c, Context* x) {
-  if (!x->port || !x->fbo) return;
+void read_frame(Context* x) {
   glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
   glPixelStorei(GL_PACK_ALIGNMENT, 4);
   glPixelStorei(GL_PACK_ROW_LENGTH, 0);
@@ -212,21 +263,42 @@ void present(GuestCall& c, Context* x) {
                x->frame.data());
   glReadBuffer((GLenum)read);
   glPopClientAttrib();
+}
 
-  static u32 lock, unlock, pixmap, base, rowbytes, pixbounds, flush, dirty, rect, whole;
+void frame_shown(Context* x, const char* kind) {
+  if (++x->frames == 1) say_once(std::string("OpenGL: first ") + kind + "frame shown");
+  if (x->frames % 300 == 0) log_info("OpenGL: %u %sframes shown", x->frames, kind);
+  if (const char* e = getenv("COCAINE_GL_FRAME")) {
+    if (strtoul(e, nullptr, 10) == x->frames) {
+      if (const char* colon = strchr(e, ':')) {
+        if (FILE* f = fopen(colon + 1, "wb")) {
+          fwrite(x->frame.data(), 1, x->frame.size(), f);
+          fclose(f);
+        }
+      }
+    }
+  }
+}
+
+// The frame, into the guest window's pixels, and onto the screen.
+void present(GuestCall& c, Context* x) {
+  if (!x->port || !x->fbo) return;
+  read_frame(x);
+  static u32 lock, unlock, pixmap, base, rowbytes, pixdepth, pixbounds, flush, dirty, rect, whole;
   if (!lock) {
     lock = c.symbol("LockPortBits");
     unlock = c.symbol("UnlockPortBits");
     pixmap = c.symbol("GetPortPixMap");
     base = c.symbol("GetPixBaseAddr");
     rowbytes = c.symbol("GetPixRowBytes");
+    pixdepth = c.symbol("GetPixDepth");
     pixbounds = c.symbol("GetPixBounds");
     flush = c.symbol("QDFlushPortBuffer");
     dirty = c.symbol("QDAddRectToDirtyRegion");
     rect = c.scratch(16);
     whole = c.scratch(16);
   }
-  if (!lock || !pixmap || !base || !rowbytes || !flush) {
+  if (!lock || !unlock || !pixmap || !base || !rowbytes || !pixdepth || !flush) {
     say_once("OpenGL: can't find QuickDraw's port functions, so nothing is shown");
     return;
   }
@@ -234,6 +306,7 @@ void present(GuestCall& c, Context* x) {
   const u32 pm = c.call(pixmap, {x->port});
   const u32 pixels = c.call(base, {pm});
   const u32 stride = c.call(rowbytes, {pm}) & 0x3FFF;
+  const u32 depth = c.call(pixdepth, {pm});
   int left = 0, top = 0, pw = 0, ph = 0;
   if (pixbounds && rect) {
     c.call(pixbounds, {pm, rect});
@@ -253,18 +326,32 @@ void present(GuestCall& c, Context* x) {
     cleft = (s16)rd16(r + 2);
   }
   const int dy = ctop - top, dx = cleft - left;
-  if (pixels && stride >= 4 && dx >= 0 && dy >= 0) {
-    const int w = pw > 0 ? std::min(pw - dx, x->width) : x->width;
+  if (depth != 16 && depth != 32) {
+    say_once("OpenGL: unsupported QuickDraw pixel depth " + std::to_string(depth));
+    c.call(unlock, {x->port});
+    return;
+  }
+  const u32 bytes_per_pixel = depth / 8;
+  if (pixels && stride >= bytes_per_pixel && dx >= 0 && dy >= 0) {
+    const int w = std::min(pw > 0 ? std::min(pw - dx, x->width) : x->width,
+                           (int)(stride / bytes_per_pixel) - dx);
     const int h = ph > 0 ? std::min(ph - dy, x->height) : x->height;
-    for (int y = 0; y < h; y++) {
+    for (int y = 0; w > 0 && y < h; y++) {
       const u8* src = x->frame.data() + (size_t)(x->height - 1 - y) * x->width * 4;
-      const u32 at = pixels + (u32)(y + dy) * stride + (u32)dx * 4;
-      memcpy(c.mem.host(at), src, (size_t)std::max(0, std::min<int>(w * 4, (int)stride - dx * 4)));
+      const u64 at = (u64)pixels + (u64)(y + dy) * stride + (u64)dx * bytes_per_pixel;
+      const u64 length = (u64)w * bytes_per_pixel;
+      if (at > UINT32_MAX || !c.mem.range_ok((u32)at, length, GuestMemory::kWrite)) {
+        say_once("OpenGL: QuickDraw pixel buffer is not writable");
+        break;
+      }
+      u8* dst = c.mem.host((u32)at);
+      if (depth == 16) display_to_rgb555(src, dst, (u32)w, c.powerpc);
+      else memcpy(dst, src, (size_t)length);
     }
   }
   top = ctop;
   left = cleft;
-  if (unlock) c.call(unlock, {x->port});
+  c.call(unlock, {x->port});
   // QuickDraw shows only what it knows changed, and it didn't see these
   // pixels change: say the whole window did.
   if (dirty && whole) {
@@ -277,38 +364,41 @@ void present(GuestCall& c, Context* x) {
     c.call(dirty, {x->port, whole});
   }
   c.call(flush, {x->port, 0});
-  if (++x->frames == 1) say_once("OpenGL: first frame shown");
-  if (x->frames % 300 == 0) log_info("OpenGL: %u frames shown", x->frames);
-  // COCAINE_GL_FRAME=n:file, for working on cocaine: frame n as cocaine read it back, raw A R G B.
-  if (const char* e = getenv("COCAINE_GL_FRAME")) {
-    if (strtoul(e, nullptr, 10) == x->frames) {
-      if (const char* colon = strchr(e, ':')) {
-        if (FILE* f = fopen(colon + 1, "wb")) {
-          fwrite(x->frame.data(), 1, x->frame.size(), f);
-          fclose(f);
-        }
-      }
-    }
-  }
+  frame_shown(x, "");
 }
 
 // ---- AGL ------------------------------------------------------------------------
 
-void aglChoosePixelFormat(GuestCall& c) {
+u32 choose_pixel_format(GuestCall& c, u32 attribs, const char* api) {
   g_big = c.powerpc;
-  c.i();
-  c.i();
-  const u32 attribs = c.i();
   std::string list;
-  for (const u8* p = gp(c, attribs); p && rd32(p) != 0 && list.size() < 200; p += 4) list += " " + std::to_string(rd32(p));
-  log_debug("aglChoosePixelFormat:%s", list.c_str());
-  c.ret(0x00C0F000);  // any pixel format the guest asks for, the host's will do
-}
-
-void aglCreateContext(GuestCall& c) {
-  g_big = c.powerpc;
-  c.i();
-  const u32 share = c.i();
+  if (attribs) {
+    bool ended = false;
+    for (u32 i = 0; i < 128; i++) {
+      const u64 at = (u64)attribs + 4 * i;
+      if (at > UINT32_MAX || !c.mem.range_ok((u32)at, 4, GuestMemory::kRead)) {
+        agl_error(kCGLBadAddress, "reading pixel format attributes");
+        return 0;
+      }
+      const u32 value = c.mem.r32((u32)at);
+      if (!value) {
+        ended = true;
+        break;
+      }
+      if (list.size() < 200) list += " " + std::to_string(value);
+    }
+    if (!ended) {
+      agl_error(kCGLBadAttribute, "reading pixel format attributes");
+      return 0;
+    }
+    static std::once_flag warned;
+    std::call_once(warned, [] {
+      log_warn("OpenGL: requested pixel format attributes are not yet enforced");
+    });
+  }
+  log_debug("%s:%s", api, list.c_str());
+  // Keep the existing offscreen context format; requested AGL attributes are
+  // not yet used to choose it.
   const CGLPixelFormatAttribute attrs[] = {
       kCGLPFAAccelerated, kCGLPFAColorSize, (CGLPixelFormatAttribute)24, kCGLPFAAlphaSize,
       (CGLPixelFormatAttribute)8, kCGLPFADepthSize, (CGLPixelFormatAttribute)24, kCGLPFAStencilSize,
@@ -316,25 +406,207 @@ void aglCreateContext(GuestCall& c) {
       (CGLPixelFormatAttribute)0};
   CGLPixelFormatObj pf = nullptr;
   GLint n = 0;
-  if (CGLChoosePixelFormat(attrs, &pf, &n) != kCGLNoError || !pf) {
-    log_warn("OpenGL: the Mac offered no pixel format");
-    c.ret(0);
-    return;
+  CGLError error = CGLChoosePixelFormat(attrs, &pf, &n);
+  if (error != kCGLNoError || !pf || n <= 0) {
+    if (pf) CGLReleasePixelFormat(pf);
+    agl_error(error != kCGLNoError ? error : kCGLBadPixelFormat, "choosing a pixel format");
+    return 0;
+  }
+  std::lock_guard<std::mutex> lk(g_mu);
+  const u32 handle = g_next_handle += 0x10;
+  g_formats[handle] = {pf, 1};
+  agl_error(kCGLNoError, "choosing a pixel format");
+  return handle;
+}
+
+void aglChoosePixelFormat(GuestCall& c) {
+  c.i();
+  c.i();
+  const u32 attribs = c.i();
+  c.ret(choose_pixel_format(c, attribs, "aglChoosePixelFormat"));
+}
+
+CGLError release_pixel_format(u32 handle) {
+  CGLPixelFormatObj pf = nullptr;
+  {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_formats.find(handle);
+    if (it == g_formats.end()) return kCGLBadPixelFormat;
+    if (--it->second.refs) return kCGLNoError;
+    pf = it->second.cgl;
+    g_formats.erase(it);
+  }
+  CGLReleasePixelFormat(pf);
+  return kCGLNoError;
+}
+
+void aglDestroyPixelFormat(GuestCall& c) {
+  agl_error(release_pixel_format(c.i()), "destroying a pixel format");
+}
+
+void aglDescribePixelFormat(GuestCall& c) {
+  const u32 handle = c.i(), attr = c.i(), out = c.i();
+  if (!out || !c.mem.range_ok(out, 4, GuestMemory::kWrite)) {
+    agl_error(kCGLBadAddress, "describing a pixel format");
+    return c.ret(0);
+  }
+  std::lock_guard<std::mutex> lk(g_mu);
+  auto it = g_formats.find(handle);
+  if (it == g_formats.end()) {
+    agl_error(kCGLBadPixelFormat, "describing a pixel format");
+    return c.ret(0);
+  }
+  GLint value = 0;
+  CGLError error;
+  switch (attr) {
+    case 4:  // AGL_RGBA
+      value = 1;
+      error = kCGLNoError;
+      break;
+    case 5: case 6: case 7: case 11: case 12: case 13:
+    case 51: case 52: case 53: case 54: case 55: case 56:
+    case 57: case 58: case 59: case 60: case 61: case 70:
+    case 71: case 72: case 73: case 74: case 75: case 76:
+    case 78: case 80: case 81: case 83: case 84: case 90:
+    case 91: case 96:
+      error = CGLDescribePixelFormat(it->second.cgl, 0, (CGLPixelFormatAttribute)attr, &value);
+      break;
+    default:
+      error = kCGLBadAttribute;
+      break;
+  }
+  agl_error(error, "describing a pixel format");
+  if (error != kCGLNoError) return c.ret(0);
+  c.mem.w32(out, (u32)value);
+  c.ret(1);
+}
+
+void aglQueryRendererInfo(GuestCall& c) {
+  const u32 devices = c.i();
+  const s32 count = (s32)c.i();
+  if (count < 0 || count > 64 || (devices && !c.mem.range_ok(devices, (u64)count * 4, GuestMemory::kRead))) {
+    agl_error(kCGLBadDisplay, "querying renderers");
+    return c.ret(0);
+  }
+  if (devices && count) {
+    const u32 get_main_device = c.symbol("GetMainDevice");
+    const u32 main_device = get_main_device ? c.call(get_main_device, {}) : 0;
+    if (!main_device) {
+      agl_error(kCGLBadDisplay, "finding the guest display");
+      return c.ret(0);
+    }
+    for (s32 i = 0; i < count; i++) {
+      if (c.mem.r32(devices + (u32)i * 4) != main_device) {
+        agl_error(kCGLBadDisplay, "querying renderers for an unknown display");
+        return c.ret(0);
+      }
+    }
+  }
+  const GLuint mask = CGDisplayIDToOpenGLDisplayMask(CGMainDisplayID());
+  if (!mask) {
+    agl_error(kCGLBadDisplay, "querying renderers");
+    return c.ret(0);
+  }
+  auto query = std::make_shared<RendererQuery>();
+  GLint n = 0;
+  CGLError error = CGLQueryRendererInfo(mask, &query->info, &n);
+  if (error != kCGLNoError || !query->info || n <= 0) {
+    agl_error(error != kCGLNoError ? error : kCGLBadRendererInfo, "querying renderers");
+    return c.ret(0);
+  }
+  std::lock_guard<std::mutex> lk(g_mu);
+  for (GLint i = 0; i < n; i++) {
+    const u32 handle = g_next_handle += 0x10;
+    query->handles.push_back(handle);
+    g_renderers.emplace(handle, RendererEntry{query, i});
+  }
+  agl_error(kCGLNoError, "querying renderers");
+  c.ret(query->handles.front());
+}
+
+void aglNextRendererInfo(GuestCall& c) {
+  const u32 handle = c.i();
+  std::lock_guard<std::mutex> lk(g_mu);
+  auto it = g_renderers.find(handle);
+  if (it == g_renderers.end()) {
+    agl_error(kCGLBadRendererInfo, "finding the next renderer");
+    return c.ret(0);
+  }
+  const auto& entry = it->second;
+  const size_t next = (size_t)entry.index + 1;
+  agl_error(kCGLNoError, "finding the next renderer");
+  c.ret(next < entry.query->handles.size() ? entry.query->handles[next] : 0);
+}
+
+void aglDescribeRenderer(GuestCall& c) {
+  const u32 handle = c.i(), property = c.i(), out = c.i();
+  if (!out || !c.mem.range_ok(out, 4, GuestMemory::kWrite)) {
+    agl_error(kCGLBadAddress, "describing a renderer");
+    return c.ret(0);
+  }
+  std::lock_guard<std::mutex> lk(g_mu);
+  auto it = g_renderers.find(handle);
+  if (it == g_renderers.end()) {
+    agl_error(kCGLBadRendererInfo, "describing a renderer");
+    return c.ret(0);
+  }
+  GLint value = 0;
+  CGLError error = kCGLNoError;
+  if (property != 101 && property != 102) {
+    error = CGLDescribeRenderer(it->second.query->info, it->second.index, (CGLRendererProperty)property, &value);
+  }
+  agl_error(error, "describing a renderer");
+  if (error != kCGLNoError) return c.ret(0);
+  c.mem.w32(out, (u32)value);
+  c.ret(1);
+}
+
+void aglDestroyRendererInfo(GuestCall& c) {
+  const u32 handle = c.i();
+  std::lock_guard<std::mutex> lk(g_mu);
+  auto it = g_renderers.find(handle);
+  if (it == g_renderers.end()) return agl_error(kCGLBadRendererInfo, "destroying renderer information");
+  const auto query = it->second.query;
+  for (u32 h : query->handles) g_renderers.erase(h);
+  agl_error(kCGLNoError, "destroying renderer information");
+}
+
+u32 create_context(GuestCall& c, u32 format, u32 share) {
+  g_big = c.powerpc;
+  CGLPixelFormatObj pf = nullptr;
+  {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_formats.find(format);
+    if (it != g_formats.end()) pf = CGLRetainPixelFormat(it->second.cgl);
+  }
+  if (!pf) {
+    agl_error(kCGLBadPixelFormat, "creating a context");
+    return 0;
   }
   Context* shared = share ? context_of(share) : nullptr;
+  if (share && !shared) {
+    CGLReleasePixelFormat(pf);
+    agl_error(kCGLBadMatch, "creating a context");
+    return 0;
+  }
   auto* x = new Context;
   const CGLError e = CGLCreateContext(pf, shared ? shared->cgl : nullptr, &x->cgl);
   CGLReleasePixelFormat(pf);
   if (e != kCGLNoError) {
-    log_warn("OpenGL: the Mac would not make a context (%d)", (int)e);
+    agl_error(e, "creating a context");
     delete x;
-    c.ret(0);
-    return;
+    return 0;
   }
   std::lock_guard<std::mutex> lk(g_mu);
   x->handle = g_next_handle += 0x10;
   g_contexts[x->handle] = x;
-  c.ret(x->handle);
+  agl_error(kCGLNoError, "creating a context");
+  return x->handle;
+}
+
+void aglCreateContext(GuestCall& c) {
+  const u32 format = c.i(), share = c.i();
+  c.ret(create_context(c, format, share));
 }
 
 void make_current(Context* x) {
@@ -358,32 +630,38 @@ void aglSetCurrentContext(GuestCall& c) {
 
 void aglGetCurrentContext(GuestCall& c) { c.ret(t_current ? t_current->handle : 0); }
 
-void aglDestroyContext(GuestCall& c) {
-  const u32 h = c.i();
-  Context* x = context_of(h);
-  if (x) {
-    if (t_current == x) make_current(nullptr);
-    // Renderbuffers belong to every context sharing with this one, so going
-    // with the context isn't enough to free them: they are freed by name.
-    if (x->fbo) {
-      const CGLContextObj before = CGLGetCurrentContext();
-      CGLSetCurrentContext(x->cgl);
-      glDeleteFramebuffersEXT(1, &x->fbo);
-      glDeleteRenderbuffersEXT(1, &x->color);
-      glDeleteRenderbuffersEXT(1, &x->depth);
-      CGLSetCurrentContext(before);
-    }
-    CGLDestroyContext(x->cgl);
+CGLError release_context(GuestCall& c, u32 handle) {
+  Context* x;
+  {
     std::lock_guard<std::mutex> lk(g_mu);
-    g_contexts.erase(h);
-    delete x;
+    const auto it = g_contexts.find(handle);
+    if (it == g_contexts.end()) return kCGLBadContext;
+    x = it->second;
+    if (--x->refs) return kCGLNoError;
+    g_contexts.erase(it);
   }
-  c.ret(1);
+  if (t_current == x) make_current(nullptr);
+  if (x->fbo) {
+    const CGLContextObj before = CGLGetCurrentContext();
+    CGLSetCurrentContext(x->cgl);
+    glDeleteFramebuffersEXT(1, &x->fbo);
+    glDeleteRenderbuffersEXT(1, &x->color);
+    glDeleteRenderbuffersEXT(1, &x->depth);
+    CGLSetCurrentContext(before);
+  }
+  const CGLError error = CGLDestroyContext(x->cgl);
+  if (x->guest_frame) c.mem.unmap(x->guest_frame, x->guest_frame_size);
+  delete x;
+  return error;
 }
 
-void resize_to_port(GuestCall& c, Context* x) {
-  int w = 0, h = 0;
-  if (!port_size(c, x->port, w, h)) return;
+void aglDestroyContext(GuestCall& c) {
+  const CGLError error = release_context(c, c.i());
+  agl_error(error, "destroying a context");
+  c.ret(error == kCGLNoError);
+}
+
+void resize_context(Context* x, int w, int h) {
   CGLContextObj before = CGLGetCurrentContext();
   CGLSetCurrentContext(x->cgl);
   size_framebuffer(x, w, h);
@@ -394,6 +672,11 @@ void resize_to_port(GuestCall& c, Context* x) {
   glPixelStorei(GL_PACK_SWAP_BYTES, g_big != x->pack_swap);
   CGLSetCurrentContext(before);
   if (t_current) glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, t_current->fbo);
+}
+
+void resize_to_port(GuestCall& c, Context* x) {
+  int w = 0, h = 0;
+  if (port_size(c, x->port, w, h)) resize_context(x, w, h);
 }
 
 void aglSetDrawable(GuestCall& c) {
@@ -413,13 +696,13 @@ void aglUpdateContext(GuestCall& c) {
   c.ret(x != nullptr);
 }
 
-// Frames are shown at most this often (COCAINE_GL_FPS, 60 unless set): a
+// Frames are shown at most this often (COCAINE_GL_FPS, 120 unless set): a
 // Mac of the time held a game to the display's refresh, and frames past what
 // the screen shows only cost power, twice over, since the guest's window
 // server composites each one.
 void pace() {
   static const double interval = [] {
-    double fps = 60;
+    double fps = 120;
     if (const char* e = getenv("COCAINE_GL_FPS")) fps = atof(e);
     return fps >= 1 ? 1e9 / fps : 0.0;
   }();
@@ -449,22 +732,476 @@ void aglSetFullScreen(GuestCall& c) {
   c.ret(0);
 }
 
+void aglDisable(GuestCall& c) {
+  Context* x = context_of(c.i());
+  const u32 name = c.i();
+  if (!x) {
+    agl_error(kCGLBadContext, "disabling an AGL option");
+    return c.ret(0);
+  }
+  // Buffer rectangles are disabled by default; enabling them is not yet
+  // implemented, so disabling them leaves the full drawable in use.
+  if (name != 202) {
+    agl_error(kCGLBadEnumeration, "disabling an AGL option");
+    return c.ret(0);
+  }
+  agl_error(kCGLNoError, "disabling an AGL option");
+  c.ret(1);
+}
+
 void agl_true(GuestCall& c) { c.ret(1); }
-void agl_zero(GuestCall& c) { c.ret(0); }
+void aglGetError(GuestCall& c) {
+  const CGLError error = t_agl_error;
+  t_agl_error = kCGLNoError;
+  c.ret((u32)error);
+}
 
 void aglErrorString(GuestCall& c) {
-  static u32 s = 0;
-  if (!s) {
-    s = c.scratch(16);
-    if (s) memcpy(c.mem.host(s), "no error", 9);
+  const u32 error = c.i();
+  static std::mutex mu;
+  static std::unordered_map<u32, u32> strings;
+  std::lock_guard<std::mutex> lk(mu);
+  auto found = strings.find(error);
+  if (found != strings.end()) return c.ret(found->second);
+  const char* text = CGLErrorString((CGLError)error);
+  if (!text) {
+    log_warn("OpenGL: no error string for code %u", error);
+    return c.ret(0);
   }
-  c.ret(s);
+  const size_t size = strlen(text) + 1;
+  const u32 at = c.scratch((u32)size);
+  if (!at) {
+    log_warn("OpenGL: cannot allocate error string");
+    return c.ret(0);
+  }
+  memcpy(c.mem.host(at), text, size);
+  strings[error] = at;
+  c.ret(at);
+}
+
+// ---- CGL ----------------------------------------------------------------------
+
+void cglChoosePixelFormat(GuestCall& c) {
+  const u32 attributes = c.i(), out = c.i(), count = c.i();
+  if (!out || !count || !c.mem.range_ok(out, 4, GuestMemory::kWrite) ||
+      !c.mem.range_ok(count, 4, GuestMemory::kWrite)) return c.ret(kCGLBadAddress);
+  c.mem.w32(out, 0);
+  c.mem.w32(count, 0);
+  const u32 format = choose_pixel_format(c, attributes, "CGLChoosePixelFormat");
+  if (!format) return c.ret(t_agl_error);
+  c.mem.w32(out, format);
+  c.mem.w32(count, 1);
+  c.ret(kCGLNoError);
+}
+
+void cglDescribePixelFormat(GuestCall& c) {
+  const u32 format = c.i();
+  const s32 index = (s32)c.i();
+  const u32 attribute = c.i(), out = c.i();
+  if (!out || !c.mem.range_ok(out, 4, GuestMemory::kWrite)) return c.ret(kCGLBadAddress);
+  std::lock_guard<std::mutex> lk(g_mu);
+  const auto it = g_formats.find(format);
+  if (it == g_formats.end()) return c.ret(kCGLBadPixelFormat);
+  GLint value = 0;
+  const CGLError error = CGLDescribePixelFormat(it->second.cgl, index, (CGLPixelFormatAttribute)attribute, &value);
+  if (error == kCGLNoError) c.mem.w32(out, (u32)value);
+  c.ret(error);
+}
+
+void cglDestroyPixelFormat(GuestCall& c) {
+  c.ret(release_pixel_format(c.i()));
+}
+
+void cglRetainPixelFormat(GuestCall& c) {
+  const u32 handle = c.i();
+  std::lock_guard<std::mutex> lk(g_mu);
+  const auto it = g_formats.find(handle);
+  if (it == g_formats.end()) {
+    log_warn("OpenGL: cannot retain invalid pixel format 0x%x", handle);
+    return c.ret(0);
+  }
+  ++it->second.refs;
+  c.ret(handle);
+}
+
+void cglReleasePixelFormat(GuestCall& c) {
+  const CGLError error = release_pixel_format(c.i());
+  if (error != kCGLNoError) log_warn("OpenGL: cannot release pixel format (%d)", error);
+}
+
+void cglCreateContext(GuestCall& c) {
+  const u32 format = c.i(), share = c.i(), out = c.i();
+  if (!out || !c.mem.range_ok(out, 4, GuestMemory::kWrite)) return c.ret(kCGLBadAddress);
+  const u32 context = create_context(c, format, share);
+  c.mem.w32(out, context);
+  c.ret(context ? kCGLNoError : t_agl_error);
+}
+
+void cglDestroyContext(GuestCall& c) {
+  const u32 handle = c.i();
+  c.ret(release_context(c, handle));
+}
+
+void cglRetainContext(GuestCall& c) {
+  const u32 handle = c.i();
+  std::lock_guard<std::mutex> lk(g_mu);
+  const auto it = g_contexts.find(handle);
+  if (it == g_contexts.end()) {
+    log_warn("OpenGL: cannot retain invalid context 0x%x", handle);
+    return c.ret(0);
+  }
+  ++it->second->refs;
+  c.ret(handle);
+}
+
+void cglReleaseContext(GuestCall& c) {
+  const CGLError error = release_context(c, c.i());
+  if (error != kCGLNoError) log_warn("OpenGL: cannot release context (%d)", error);
+}
+
+void cglSetCurrentContext(GuestCall& c) {
+  const u32 handle = c.i();
+  Context* x = handle ? context_of(handle) : nullptr;
+  if (handle && !x) return c.ret(kCGLBadContext);
+  make_current(x);
+  c.ret(kCGLNoError);
+}
+
+void cglGetCurrentContext(GuestCall& c) { c.ret(t_current ? t_current->handle : 0); }
+
+void cglClearDrawable(GuestCall& c) {
+  Context* x = context_of(c.i());
+  if (!x) return c.ret(kCGLBadContext);
+  x->connection = x->window = x->surface = 0;
+  x->display = 0;
+  c.ret(kCGLNoError);
+}
+
+bool resize_to_display(GuestCall& c, Context* x) {
+  const u32 width = c.symbol("CGDisplayPixelsWide"), height = c.symbol("CGDisplayPixelsHigh");
+  if (!width || !height) {
+    say_once("OpenGL: cannot find captured display dimensions");
+    return false;
+  }
+  const u32 w = c.call(width, {x->display}), h = c.call(height, {x->display});
+  if (!w || !h || w > 16384 || h > 16384) {
+    log_warn("OpenGL: invalid captured display size %u x %u", w, h);
+    return false;
+  }
+  resize_context(x, (int)w, (int)h);
+  return true;
+}
+
+void set_full_screen(GuestCall& c, Context* x, u32 mask) {
+  if (!x) return c.ret(kCGLBadContext);
+  const u32 main_display = c.symbol("CGMainDisplayID"), display_mask = c.symbol("CGDisplayIDToOpenGLDisplayMask");
+  if (!main_display || !display_mask) {
+    say_once("OpenGL: cannot find the guest fullscreen display");
+    return c.ret(kCGLBadDisplay);
+  }
+  const u32 display = c.call(main_display, {});
+  if (mask && mask != c.call(display_mask, {display})) return c.ret(kCGLBadDisplay);
+  const u32 previous = x->display;
+  x->display = display;
+  if (!resize_to_display(c, x)) {
+    x->display = previous;
+    return c.ret(kCGLBadDrawable);
+  }
+  x->connection = x->window = x->surface = 0;
+  c.ret(kCGLNoError);
+}
+
+void cglSetFullScreen(GuestCall& c) {
+  Context* x = context_of(c.i());
+  set_full_screen(c, x, 0);
+}
+
+void cglSetFullScreenOnDisplay(GuestCall& c) {
+  Context* x = context_of(c.i());
+  const u32 mask = c.i();
+  if (!mask) return c.ret(x ? kCGLBadDisplay : kCGLBadContext);
+  set_full_screen(c, x, mask);
+}
+
+bool resize_to_surface(GuestCall& c, Context* x) {
+  const u32 get_bounds = c.symbol("CGSGetSurfaceBounds");
+  if (!get_bounds) {
+    say_once("OpenGL: cannot find CGSGetSurfaceBounds");
+    return false;
+  }
+  if (!x->surface_rect) x->surface_rect = c.scratch(16);
+  if (!x->surface_rect) {
+    say_once("OpenGL: cannot allocate a surface rectangle");
+    return false;
+  }
+  const u32 error = c.call(get_bounds, {x->connection, x->window, x->surface, x->surface_rect});
+  if (error) {
+    log_warn("OpenGL: cannot get Cocoa surface bounds (%u)", error);
+    return false;
+  }
+  const u8* rect = gp(c, x->surface_rect);
+  const float left = rdf(rect), top = rdf(rect + 4), w = rdf(rect + 8), h = rdf(rect + 12);
+  if (!std::isfinite(left) || !std::isfinite(top) || !std::isfinite(w) || !std::isfinite(h) ||
+      w < 1 || h < 1 || w > 16384 || h > 16384) {
+    log_warn("OpenGL: invalid Cocoa surface bounds %g,%g %gx%g", left, top, w, h);
+    return false;
+  }
+  x->surface_x = left;
+  x->surface_y = top;
+  resize_context(x, (int)w, (int)h);
+  log_debug("OpenGL: Cocoa surface %g,%g %d x %d", left, top, x->width, x->height);
+  return true;
+}
+
+bool present_surface(GuestCall& c, Context* x) {
+  if ((!x->display && (!x->window || !x->surface)) || !x->fbo) {
+    say_once("OpenGL: Cocoa context has no drawable");
+    return false;
+  }
+  SurfaceFunctions& fn = x->surface_functions;
+  if (!fn.window_context) {
+    SurfaceFunctions found;
+    found.window_context = c.symbol("CGWindowContextCreate");
+    found.color_space = c.symbol("CGColorSpaceCreateDeviceRGB");
+    found.provider = c.symbol("CGDataProviderCreateWithData");
+    found.image_create = c.symbol("CGImageCreate");
+    found.draw = c.symbol("CGContextDrawImage");
+    found.flush = c.symbol("CGContextFlush");
+    found.release_context = c.symbol("CGContextRelease");
+    found.release_color = c.symbol("CGColorSpaceRelease");
+    found.release_provider = c.symbol("CGDataProviderRelease");
+    found.release_image = c.symbol("CGImageRelease");
+    found.window_bounds = c.symbol("CGSGetWindowBounds");
+    found.display_context = c.symbol("CGDisplayGetDrawingContext");
+    if (!found.window_context || !found.color_space || !found.provider || !found.image_create ||
+        !found.draw || !found.flush || !found.release_context || !found.release_color ||
+        !found.release_provider || !found.release_image || !found.window_bounds || !found.display_context) {
+      say_once("OpenGL: cannot find CoreGraphics functions for a Cocoa surface");
+      return false;
+    }
+    fn = found;
+  }
+  const u64 bytes = (u64)x->width * x->height * 4;
+  if (bytes > UINT32_MAX) {
+    say_once("OpenGL: Cocoa surface is too large");
+    return false;
+  }
+  if (bytes > x->guest_frame_size) {
+    if (x->guest_frame) c.mem.unmap(x->guest_frame, x->guest_frame_size);
+    x->guest_frame = c.mem.map_alone(bytes, GuestMemory::kRead | GuestMemory::kWrite, 0x10000000u, 0xC0000000u);
+    x->guest_frame_size = x->guest_frame ? (u32)bytes : 0;
+  }
+  if (!x->guest_frame) {
+    say_once("OpenGL: cannot allocate Cocoa surface pixels");
+    return false;
+  }
+  read_frame(x);
+  const size_t row = (size_t)x->width * 4;
+  for (int y = 0; y < x->height; y++)
+    memcpy(c.mem.host(x->guest_frame) + (size_t)y * row,
+           x->frame.data() + (size_t)(x->height - 1 - y) * row, row);
+
+  float window_height = (float)x->height;
+  if (!x->display) {
+    if (!x->window_rect) x->window_rect = c.scratch(16);
+    const u32 bounds = x->window_rect;
+    if (!bounds || c.call(fn.window_bounds, {x->connection, x->window, bounds})) {
+      say_once("OpenGL: cannot get Cocoa window bounds");
+      return false;
+    }
+    window_height = rdf(gp(c, bounds) + 12);
+  }
+  const u32 ctx = x->display ? c.call(fn.display_context, {x->display})
+                             : c.call(fn.window_context, {x->connection, x->window, 0});
+  const u32 space = c.call(fn.color_space, {});
+  const u32 source = c.call(fn.provider, {0, x->guest_frame, (u32)bytes, 0});
+  u32 image = 0;
+  if (ctx && space && source) {
+    const u32 bitmap = (u32)kCGImageAlphaNoneSkipFirst |
+                       (u32)(c.powerpc ? kCGBitmapByteOrderDefault : kCGBitmapByteOrder32Little);
+    image = c.process.call_guest_args(c.thread, fn.image_create,
+        {{(u32)x->width}, {(u32)x->height}, {8}, {32}, {(u32)row}, {space}, {bitmap}, {source}, {0}, {0}, {0}});
+  }
+  if (image) {
+    auto bits = [](float value) { u32 word; memcpy(&word, &value, 4); return word; };
+    c.call(fn.draw, {ctx, bits(x->display ? 0 : x->surface_x),
+                  bits(x->display ? 0 : window_height - x->surface_y - x->height),
+                  bits((float)x->width), bits((float)x->height), image});
+    c.call(fn.flush, {ctx});
+  } else {
+    say_once("OpenGL: cannot create an image for a Cocoa surface");
+  }
+  if (image) c.call(fn.release_image, {image});
+  if (source) c.call(fn.release_provider, {source});
+  if (space) c.call(fn.release_color, {space});
+  // CGDisplayGetDrawingContext lends the display's context; only window
+  // contexts created above belong to us.
+  if (ctx && !x->display) c.call(fn.release_context, {ctx});
+  if (image) frame_shown(x, x->display ? "fullscreen " : "Cocoa ");
+  return image != 0;
+}
+
+void cglSetSurface(GuestCall& c) {
+  Context* x = context_of(c.i());
+  const u32 connection = c.i(), window = c.i(), surface = c.i();
+  if (!x) return c.ret(kCGLBadContext);
+  x->connection = connection;
+  x->window = window;
+  x->surface = surface;
+  x->display = 0;
+  log_debug("CGLSetSurface: connection 0x%x window 0x%x surface 0x%x", connection, window, surface);
+  c.ret(resize_to_surface(c, x) ? kCGLNoError : kCGLBadDrawable);
+}
+
+void cglUpdateContext(GuestCall& c) {
+  Context* x = context_of(c.i());
+  if (!x) return c.ret(kCGLBadContext);
+  if (x->display) return c.ret(resize_to_display(c, x) ? kCGLNoError : kCGLBadDrawable);
+  c.ret(!x->surface || resize_to_surface(c, x) ? kCGLNoError : kCGLBadDrawable);
+}
+
+void cglSetParameter(GuestCall& c) {
+  Context* x = context_of(c.i());
+  const u32 parameter = c.i(), address = c.i();
+  if (!x) return c.ret(kCGLBadContext);
+  if (!address || !c.mem.range_ok(address, 4, GuestMemory::kRead)) return c.ret(kCGLBadAddress);
+  const GLint value = (GLint)c.mem.r32(address);
+  if (parameter == kCGLCPSwapInterval) return c.ret(kCGLNoError);
+  log_warn("OpenGL: CGL context parameter %u is not supported (value %d)", parameter, value);
+  c.ret(kCGLBadEnumeration);
+}
+
+void cglFlushDrawable(GuestCall& c) {
+  Context* x = context_of(c.i());
+  if (!x || x != t_current) return c.ret(kCGLBadContext);
+  pace();
+  c.ret(present_surface(c, x) ? kCGLNoError : kCGLBadDrawable);
 }
 
 // ---- GL: state ----------------------------------------------------------------
 
 void glEnable_(GuestCall& c) { glEnable(c.i()); }
 void glDisable_(GuestCall& c) { glDisable(c.i()); }
+void glDepthRange_(GuestCall& c) { const double a = c.d(), b = c.d(); glDepthRange(a, b); }
+void glClearDepth_(GuestCall& c) { glClearDepth(c.d()); }
+void glLightModeli_(GuestCall& c) { const u32 p = c.i(); glLightModeli(p, (GLint)c.i()); }
+void glMaterialf_(GuestCall& c) { const u32 a = c.i(), b = c.i(); glMaterialf(a, b, c.f()); }
+void glPointSize_(GuestCall& c) { glPointSize(c.f()); }
+void glShadeModel_(GuestCall& c) { glShadeModel(c.i()); }
+void gluOrtho2D(GuestCall& c) {
+  const double left = c.d(), right = c.d(), bottom = c.d(), top = c.d();
+  glOrtho(left, right, bottom, top, -1.0, 1.0);
+}
+void gluPerspective_(GuestCall& c) {
+  const double fovy = c.d(), aspect = c.d(), near = c.d(), far = c.d();
+  gluPerspective(fovy, aspect, near, far);
+}
+std::unordered_map<u32, GLUquadric*> g_quadrics;
+GLUquadric* quadric_of(u32 handle) {
+  std::lock_guard<std::mutex> lk(g_mu);
+  const auto it = g_quadrics.find(handle);
+  return it == g_quadrics.end() ? nullptr : it->second;
+}
+void gluNewQuadric_(GuestCall& c) {
+  GLUquadric* q = gluNewQuadric();
+  if (!q) {
+    log_warn("OpenGL: cannot create GLU quadric");
+    return c.ret(0);
+  }
+  std::lock_guard<std::mutex> lk(g_mu);
+  const u32 handle = g_next_handle += 0x10;
+  g_quadrics[handle] = q;
+  c.ret(handle);
+}
+void gluDeleteQuadric_(GuestCall& c) {
+  const u32 handle = c.i();
+  std::lock_guard<std::mutex> lk(g_mu);
+  const auto it = g_quadrics.find(handle);
+  if (it == g_quadrics.end()) {
+    log_warn("OpenGL: invalid GLU quadric 0x%x", handle);
+    return;
+  }
+  gluDeleteQuadric(it->second);
+  g_quadrics.erase(it);
+}
+void gluQuadricNormals_(GuestCall& c) {
+  GLUquadric* q = quadric_of(c.i());
+  const GLenum normal = c.i();
+  if (!q) return log_warn("OpenGL: invalid GLU quadric");
+  gluQuadricNormals(q, normal);
+}
+void gluQuadricTexture_(GuestCall& c) {
+  GLUquadric* q = quadric_of(c.i());
+  const GLboolean texture = (GLboolean)c.i();
+  if (!q) return log_warn("OpenGL: invalid GLU quadric");
+  gluQuadricTexture(q, texture);
+}
+void gluSphere_(GuestCall& c) {
+  GLUquadric* q = quadric_of(c.i());
+  const double radius = c.d();
+  const int slices = (s32)c.i(), stacks = (s32)c.i();
+  if (!q) return log_warn("OpenGL: invalid GLU quadric");
+  gluSphere(q, radius, slices, stacks);
+}
+void gluCylinder_(GuestCall& c) {
+  GLUquadric* q = quadric_of(c.i());
+  const double base = c.d(), top = c.d(), height = c.d();
+  const int slices = (s32)c.i(), stacks = (s32)c.i();
+  if (!q) return log_warn("OpenGL: invalid GLU quadric");
+  gluCylinder(q, base, top, height, slices, stacks);
+}
+void gluBuild2DMipmaps_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint components = (GLint)c.i();
+  const GLsizei width = (GLsizei)c.i(), height = (GLsizei)c.i();
+  const GLenum format = c.i(), type = c.i();
+  const u32 data = c.i();
+  int channels = 0, component_size = 0, packed_size = 0;
+  switch (format) {
+    case GL_COLOR_INDEX: case GL_STENCIL_INDEX: case GL_DEPTH_COMPONENT:
+    case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: case GL_LUMINANCE: channels = 1; break;
+    case GL_LUMINANCE_ALPHA: channels = 2; break;
+    case GL_RGB: case GL_BGR: channels = 3; break;
+    case GL_RGBA: case GL_BGRA: channels = 4; break;
+  }
+  switch (type) {
+    case GL_BYTE: case GL_UNSIGNED_BYTE: component_size = 1; break;
+    case GL_SHORT: case GL_UNSIGNED_SHORT: component_size = 2; break;
+    case GL_INT: case GL_UNSIGNED_INT: case GL_FLOAT: component_size = 4; break;
+    case GL_UNSIGNED_BYTE_3_3_2: case GL_UNSIGNED_BYTE_2_3_3_REV: packed_size = 1; break;
+    case GL_UNSIGNED_SHORT_5_6_5: case GL_UNSIGNED_SHORT_5_6_5_REV:
+    case GL_UNSIGNED_SHORT_4_4_4_4: case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+    case GL_UNSIGNED_SHORT_5_5_5_1: case GL_UNSIGNED_SHORT_1_5_5_5_REV: packed_size = 2; break;
+    case GL_UNSIGNED_INT_8_8_8_8: case GL_UNSIGNED_INT_8_8_8_8_REV:
+    case GL_UNSIGNED_INT_10_10_10_2: case GL_UNSIGNED_INT_2_10_10_10_REV: packed_size = 4; break;
+  }
+  if (!channels || (!component_size && !packed_size)) {
+    log_warn("OpenGL: unsupported GLU mipmap format 0x%x type 0x%x", format, type);
+    return c.ret(GLU_INVALID_ENUM);
+  }
+  if (width <= 0 || height <= 0) return c.ret(GLU_INVALID_VALUE);
+  GLint row_length = 0, skip_rows = 0, skip_pixels = 0, alignment = 0;
+  glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
+  glGetIntegerv(GL_UNPACK_SKIP_ROWS, &skip_rows);
+  glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &skip_pixels);
+  glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+  const int limit = 1 << 20;
+  if (row_length < 0 || row_length > limit || skip_rows < 0 || skip_rows > limit ||
+      skip_pixels < 0 || skip_pixels > limit || width > limit || height > limit || alignment <= 0) {
+    log_warn("OpenGL: invalid GLU mipmap unpack state");
+    return c.ret(GLU_INVALID_VALUE);
+  }
+  const u64 pixel_size = packed_size ? (u64)packed_size : (u64)channels * component_size;
+  const u64 row_bytes = (u64)(row_length ? row_length : width) * pixel_size;
+  const u64 stride = (row_bytes + alignment - 1) / alignment * alignment;
+  const u64 bytes = (u64)skip_rows * stride + (u64)skip_pixels * pixel_size +
+                    (u64)(height - 1) * stride + (u64)width * pixel_size;
+  if (!data || bytes > UINT32_MAX || !c.mem.range_ok(data, bytes, GuestMemory::kRead)) {
+    log_warn("OpenGL: invalid GLU mipmap data");
+    return c.ret(GLU_INVALID_VALUE);
+  }
+  c.ret((u32)gluBuild2DMipmaps(target, components, width, height, format, type, gp(c, data)));
+}
 void glIsEnabled_(GuestCall& c) { c.ret(glIsEnabled(c.i())); }
 void glClear_(GuestCall& c) { glClear(c.i()); }
 void glClearColor_(GuestCall& c) {
@@ -474,6 +1211,15 @@ void glClearColor_(GuestCall& c) {
 void glViewport_(GuestCall& c) {
   const s32 x = (s32)c.i(), y = (s32)c.i(), w = (s32)c.i(), h = (s32)c.i();
   glViewport(x, y, w, h);
+}
+void glScissor_(GuestCall& c) {
+  const GLint x = (GLint)c.i(), y = (GLint)c.i();
+  const GLsizei w = (GLsizei)c.i(), h = (GLsizei)c.i();
+  glScissor(x, y, w, h);
+}
+void glColorMaterial_(GuestCall& c) {
+  const GLenum face = c.i(), mode = c.i();
+  glColorMaterial(face, mode);
 }
 void glBlendFunc_(GuestCall& c) {
   const GLenum s = c.i(), d = c.i();
@@ -517,6 +1263,7 @@ void glHint_(GuestCall& c) {
 void glPushAttrib_(GuestCall& c) { glPushAttrib(c.i()); }
 void glPopAttrib_(GuestCall& c) { glPopAttrib(); }
 void glFinish_(GuestCall& c) { glFinish(); }
+void glFlush_(GuestCall& c) { glFlush(); }
 void glGetError_(GuestCall& c) { c.ret(glGetError()); }
 
 // The window's front and back buffers are one offscreen framebuffer here.
@@ -551,7 +1298,21 @@ int written(const T* v, T marker) {
 GLenum guest_buffer(GLenum b) { return b == GL_COLOR_ATTACHMENT0_EXT ? GL_BACK : b; }
 void glGetIntegerv_(GuestCall& c) {
   const GLenum p = c.i();
-  u8* out = gp(c, c.i());
+  const u32 address = c.i();
+  u8* out = gp(c, address);
+  if (p == GL_COMPRESSED_TEXTURE_FORMATS) {
+    GLint count = 0;
+    glGetIntegerv(GL_NUM_COMPRESSED_TEXTURE_FORMATS, &count);
+    if (count <= 0) return;
+    if (!address || !c.mem.range_ok(address, (u64)count * 4, GuestMemory::kWrite)) {
+      log_warn("OpenGL: invalid compressed texture format result");
+      return;
+    }
+    std::vector<GLint> formats((size_t)count);
+    glGetIntegerv(p, formats.data());
+    for (GLint k = 0; k < count; k++) wr32(out + 4 * k, (u32)formats[(size_t)k]);
+    return;
+  }
   GLint v[16];
   const GLint marker = 0x7A5A7A5A;
   for (GLint& x : v) x = marker;
@@ -604,6 +1365,7 @@ const char* const kExtensions[] = {
     "GL_ARB_texture_border_clamp", "GL_EXT_texture_edge_clamp", "GL_SGIS_texture_edge_clamp", "GL_EXT_stencil_wrap",
     "GL_ARB_texture_cube_map", "GL_EXT_separate_specular_color", "GL_EXT_packed_pixels", "GL_APPLE_packed_pixels",
     "GL_EXT_texture_lod_bias", "GL_EXT_rescale_normal", "GL_ARB_texture_non_power_of_two",
+    "GL_ARB_texture_compression", "GL_EXT_texture_compression_s3tc",
 };
 void glGetString_(GuestCall& c) {
   const GLenum name = c.i();
@@ -676,6 +1438,111 @@ void glClipPlane_(GuestCall& c) {
 
 void glBegin_(GuestCall& c) { glBegin(c.i()); }
 void glEnd_(GuestCall& c) { glEnd(); }
+void glNormal3f_(GuestCall& c) {
+  const float x = c.f(), y = c.f(), z = c.f();
+  glNormal3f(x, y, z);
+}
+void glRasterPos2f_(GuestCall& c) {
+  const float x = c.f(), y = c.f();
+  glRasterPos2f(x, y);
+}
+void glBitmap_(GuestCall& c) {
+  const GLsizei width = (GLsizei)c.i(), height = (GLsizei)c.i();
+  const float x = c.f(), y = c.f(), dx = c.f(), dy = c.f();
+  const u32 address = c.i();
+  if (width > 0 && height > 0) {
+    GLint row_length = 0, skip_rows = 0, skip_pixels = 0, alignment = 0;
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row_length);
+    glGetIntegerv(GL_UNPACK_SKIP_ROWS, &skip_rows);
+    glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &skip_pixels);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &alignment);
+    const int limit = 1 << 20;
+    if (width > limit || height > limit || row_length < 0 || row_length > limit ||
+        skip_rows < 0 || skip_rows > limit || skip_pixels < 0 || skip_pixels > limit || alignment <= 0) {
+      log_warn("OpenGL: invalid bitmap unpack state");
+      return;
+    }
+    const u64 row = ((u64)(row_length ? row_length : width) + 7) / 8;
+    const u64 stride = (row + alignment - 1) / alignment * alignment;
+    const u64 bytes = (u64)(skip_rows + height - 1) * stride + ((u64)skip_pixels + width + 7) / 8;
+    if (!address || bytes > UINT32_MAX || !c.mem.range_ok(address, bytes, GuestMemory::kRead)) {
+      log_warn("OpenGL: invalid bitmap data");
+      return;
+    }
+  }
+  glBitmap(width, height, x, y, dx, dy, gp(c, address));
+}
+void glGenLists_(GuestCall& c) { c.ret(glGenLists((GLsizei)c.i())); }
+void glNewList_(GuestCall& c) {
+  const GLuint list = c.i();
+  glNewList(list, c.i());
+}
+void glEndList_(GuestCall& c) { glEndList(); }
+void glCallList_(GuestCall& c) { glCallList(c.i()); }
+void glListBase_(GuestCall& c) { glListBase(c.i()); }
+void glDeleteLists_(GuestCall& c) {
+  const GLuint list = c.i();
+  glDeleteLists(list, (GLsizei)c.i());
+}
+void glCallLists_(GuestCall& c) {
+  const s32 count = (s32)c.i();
+  const GLenum type = c.i();
+  const u32 address = c.i();
+  int size = 0;
+  switch (type) {
+    case GL_BYTE: case GL_UNSIGNED_BYTE: size = 1; break;
+    case GL_SHORT: case GL_UNSIGNED_SHORT: case GL_2_BYTES: size = 2; break;
+    case GL_3_BYTES: size = 3; break;
+    case GL_INT: case GL_UNSIGNED_INT: case GL_FLOAT: case GL_4_BYTES: size = 4; break;
+    default: log_warn("OpenGL: invalid display list element type 0x%x", type); return;
+  }
+  if (count < 0 || (count && (!address || !c.mem.range_ok(address, (u64)count * size, GuestMemory::kRead)))) {
+    log_warn("OpenGL: invalid display list elements");
+    return;
+  }
+  const u8* src = gp(c, address);
+  if (!c.powerpc || size == 1 || type == GL_2_BYTES || type == GL_3_BYTES || type == GL_4_BYTES) {
+    glCallLists(count, type, src);
+    return;
+  }
+  std::vector<u8> converted((size_t)count * size);
+  for (int i = 0; i < count; i++)
+    for (int j = 0; j < size; j++) converted[(size_t)i * size + j] = src[(size_t)i * size + size - 1 - j];
+  glCallLists(count, type, converted.data());
+}
+void glPushClientAttrib_(GuestCall& c) {
+  const GLbitfield mask = c.i();
+  if (t_current) {
+    ClientArrays s;
+    s.mask = mask;
+    s.vertex = t_current->vertex;
+    s.normal = t_current->normal;
+    s.color = t_current->color_array;
+    for (int i = 0; i < 8; i++) s.tex[i] = t_current->tex[i];
+    s.unit = t_current->client_unit;
+    s.unpack_swap = t_current->unpack_swap;
+    s.pack_swap = t_current->pack_swap;
+    t_current->client_stack.push_back(std::move(s));
+  }
+  glPushClientAttrib(mask);
+}
+void glPopClientAttrib_(GuestCall& c) {
+  glPopClientAttrib();
+  if (!t_current || t_current->client_stack.empty()) return;
+  ClientArrays s = std::move(t_current->client_stack.back());
+  t_current->client_stack.pop_back();
+  if (s.mask & GL_CLIENT_VERTEX_ARRAY_BIT) {
+    t_current->vertex = std::move(s.vertex);
+    t_current->normal = std::move(s.normal);
+    t_current->color_array = std::move(s.color);
+    for (int i = 0; i < 8; i++) t_current->tex[i] = std::move(s.tex[i]);
+    t_current->client_unit = s.unit;
+  }
+  if (s.mask & GL_CLIENT_PIXEL_STORE_BIT) {
+    t_current->unpack_swap = s.unpack_swap;
+    t_current->pack_swap = s.pack_swap;
+  }
+}
 void glVertex2f_(GuestCall& c) {
   const float x = c.f(), y = c.f();
   glVertex2f(x, y);
@@ -845,6 +1712,103 @@ void glTexSubImage2D_(GuestCall& c) {
   const u32 pixels = c.i();
   glTexSubImage2D(target, level, x, y, w, h, format, type, gp(c, pixels));
 }
+bool compressed_data_valid(GuestCall& c, u32 pixels, GLsizei size, bool allow_null = true) {
+  if (size > 0 && ((!pixels && !allow_null) ||
+                   (pixels && !c.mem.range_ok(pixels, (u32)size, GuestMemory::kRead)))) {
+    log_warn("OpenGL: invalid compressed texture data");
+    return false;
+  }
+  return true;
+}
+// Compressed blocks have a fixed byte layout, independent of the guest CPU.
+void glCompressedTexImage1D_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i();
+  const GLenum format = c.i();
+  const GLsizei width = (GLsizei)c.i();
+  const GLint border = (GLint)c.i();
+  const GLsizei size = (GLsizei)c.i();
+  const u32 pixels = c.i();
+  if (compressed_data_valid(c, pixels, size))
+    glCompressedTexImage1D(target, level, format, width, border, size, gp(c, pixels));
+}
+void glCompressedTexImage2D_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i();
+  const GLenum format = c.i();
+  const GLsizei width = (GLsizei)c.i(), height = (GLsizei)c.i();
+  const GLint border = (GLint)c.i();
+  const GLsizei size = (GLsizei)c.i();
+  const u32 pixels = c.i();
+  if (compressed_data_valid(c, pixels, size))
+    glCompressedTexImage2D(target, level, format, width, height, border, size, gp(c, pixels));
+}
+void glCompressedTexImage3D_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i();
+  const GLenum format = c.i();
+  const GLsizei width = (GLsizei)c.i(), height = (GLsizei)c.i(), depth = (GLsizei)c.i();
+  const GLint border = (GLint)c.i();
+  const GLsizei size = (GLsizei)c.i();
+  const u32 pixels = c.i();
+  if (compressed_data_valid(c, pixels, size))
+    glCompressedTexImage3D(target, level, format, width, height, depth, border, size, gp(c, pixels));
+}
+void glCompressedTexSubImage1D_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i(), x = (GLint)c.i();
+  const GLsizei width = (GLsizei)c.i();
+  const GLenum format = c.i();
+  const GLsizei size = (GLsizei)c.i();
+  const u32 pixels = c.i();
+  if (compressed_data_valid(c, pixels, size, false))
+    glCompressedTexSubImage1D(target, level, x, width, format, size, gp(c, pixels));
+}
+void glCompressedTexSubImage2D_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i(), x = (GLint)c.i(), y = (GLint)c.i();
+  const GLsizei width = (GLsizei)c.i(), height = (GLsizei)c.i();
+  const GLenum format = c.i();
+  const GLsizei size = (GLsizei)c.i();
+  const u32 pixels = c.i();
+  if (compressed_data_valid(c, pixels, size, false))
+    glCompressedTexSubImage2D(target, level, x, y, width, height, format, size, gp(c, pixels));
+}
+void glCompressedTexSubImage3D_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i(), x = (GLint)c.i(), y = (GLint)c.i(), z = (GLint)c.i();
+  const GLsizei width = (GLsizei)c.i(), height = (GLsizei)c.i(), depth = (GLsizei)c.i();
+  const GLenum format = c.i();
+  const GLsizei size = (GLsizei)c.i();
+  const u32 pixels = c.i();
+  if (compressed_data_valid(c, pixels, size, false))
+    glCompressedTexSubImage3D(target, level, x, y, z, width, height, depth, format, size, gp(c, pixels));
+}
+void glGetTexLevelParameteriv_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i();
+  const GLenum parameter = c.i();
+  const u32 out = c.i();
+  if (!out || !c.mem.range_ok(out, 4, GuestMemory::kWrite)) {
+    log_warn("OpenGL: invalid texture level result");
+    return;
+  }
+  GLint value = 0;
+  glGetTexLevelParameteriv(target, level, parameter, &value);
+  wr32(gp(c, out), (u32)value);
+}
+void glGetCompressedTexImage_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i();
+  const u32 pixels = c.i();
+  GLint size = 0;
+  glGetTexLevelParameteriv(target, level, GL_TEXTURE_COMPRESSED_IMAGE_SIZE, &size);
+  if (size > 0 && (!pixels || !c.mem.range_ok(pixels, (u32)size, GuestMemory::kWrite))) {
+    log_warn("OpenGL: invalid compressed texture result");
+    return;
+  }
+  glGetCompressedTexImage(target, level, gp(c, pixels));
+}
 void glReadPixels_(GuestCall& c) {
   const GLint x = (GLint)c.i(), y = (GLint)c.i();
   const GLsizei w = (GLsizei)c.i(), h = (GLsizei)c.i();
@@ -912,6 +1876,12 @@ const void* convert(GuestCall& c, Array& a, u32 lo, u32 hi) {
   const int ts = type_size(a.type), es = a.size * ts;
   const u32 stride = a.stride ? (u32)a.stride : (u32)es;
   a.host.resize((size_t)(hi + 1) * (size_t)es);
+  if (es > 0 && hi >= lo && (u64)a.ptr + (u64)hi * stride + (u64)es <= GuestMemory::kSpan) {
+    const u8* src = gp(c, a.ptr + lo * stride);
+    u8* dst = a.host.data() + (size_t)lo * (size_t)es;
+    copy_vertex_array(src, dst, (size_t)hi - lo + 1, (size_t)a.size, (size_t)ts, stride, c.powerpc);
+    return a.host.data();
+  }
   for (u32 i = lo; i <= hi; i++) {
     const u8* src = gp(c, a.ptr + i * stride);
     u8* dst = a.host.data() + (size_t)i * (size_t)es;
@@ -955,11 +1925,8 @@ void glDrawArrays_(GuestCall& c) {
   prepare_arrays(c, (u32)first, (u32)(first + count - 1));
   glDrawArrays(mode, first, count);
 }
-void glDrawElements_(GuestCall& c) {
-  const GLenum mode = c.i();
-  const GLsizei count = (GLsizei)c.i();
-  const GLenum type = c.i();
-  const u8* in = gp(c, c.i());
+void draw_elements(GuestCall& c, GLenum mode, GLsizei count, GLenum type, u32 indices) {
+  const u8* in = gp(c, indices);
   if (count <= 0 || !in) return;
   static thread_local std::vector<GLuint> idx;
   idx.resize((size_t)count);
@@ -972,6 +1939,22 @@ void glDrawElements_(GuestCall& c) {
   }
   prepare_arrays(c, lo, hi);
   glDrawElements(mode, count, GL_UNSIGNED_INT, idx.data());
+}
+void glDrawElements_(GuestCall& c) {
+  const GLenum mode = c.i();
+  const GLsizei count = (GLsizei)c.i();
+  const GLenum type = c.i();
+  const u32 indices = c.i();
+  draw_elements(c, mode, count, type, indices);
+}
+void glDrawRangeElements_(GuestCall& c) {
+  const GLenum mode = c.i();
+  c.i();  // The range is only a hint; draw_elements finds the actual bounds.
+  c.i();
+  const GLsizei count = (GLsizei)c.i();
+  const GLenum type = c.i();
+  const u32 indices = c.i();
+  draw_elements(c, mode, count, type, indices);
 }
 // One element of each enabled array, as immediate mode would give it.
 void glArrayElement_(GuestCall& c) {
@@ -1026,28 +2009,55 @@ void glUnlockArraysEXT_(GuestCall& c) {}
 
 #define H(name) {#name, name##_}
 const HookSpec kGL[] = {
-    H(glEnable), H(glDisable), H(glIsEnabled), H(glClear), H(glClearColor), H(glViewport), H(glBlendFunc),
+    {"CGLSetCurrentContext", cglSetCurrentContext},
+    {"CGLGetCurrentContext", cglGetCurrentContext},
+    H(glEnable), H(glDisable), H(glDepthRange), H(glClearDepth), H(glLightModeli), H(glMaterialf),
+    H(glPointSize), H(glShadeModel), H(glIsEnabled), H(glClear), H(glClearColor), H(glViewport), H(glBlendFunc),
+    H(glScissor), H(glColorMaterial),
     H(glAlphaFunc), H(glCullFace), H(glFrontFace), H(glDepthFunc), H(glDepthMask), H(glColorMask),
     H(glStencilFunc), H(glStencilMask), H(glStencilOp), H(glPolygonMode), H(glPolygonOffset), H(glLineWidth),
-    H(glHint), H(glPushAttrib), H(glPopAttrib), H(glFinish), H(glGetError), H(glDrawBuffer), H(glReadBuffer),
+    H(glHint), H(glPushAttrib), H(glPopAttrib), H(glPushClientAttrib), H(glPopClientAttrib),
+    H(glFinish), H(glFlush), H(glGetError), H(glDrawBuffer), H(glReadBuffer),
     H(glPixelStorei), H(glGetIntegerv), H(glGetFloatv), H(glGetDoublev), H(glGetString), H(glMatrixMode),
     H(glLoadIdentity), H(glPushMatrix), H(glPopMatrix), H(glLoadMatrixf), H(glMultMatrixf), H(glTranslatef),
     H(glScalef), H(glRotatef), H(glOrtho), H(glFrustum), H(glClipPlane), H(glBegin), H(glEnd), H(glVertex2f),
+    H(glNormal3f), H(glRasterPos2f), H(glBitmap), H(glGenLists), H(glNewList), H(glEndList),
+    H(glCallList), H(glCallLists), H(glListBase), H(glDeleteLists),
     H(glVertex2i), H(glVertex3f), H(glVertex2fv), H(glVertex3fv), H(glTexCoord2f), H(glColor3f), H(glColor4f),
     H(glColor4fv), H(glColor3i), H(glColor3ub), H(glColor4ub), H(glColor3ubv), H(glColor4ubv), H(glRecti),
     H(glFogf), H(glFogi), H(glFogfv), H(glLightf), H(glLightfv), H(glLightModelfv), H(glMaterialfv),
     H(glTexEnvf), H(glTexEnvi), H(glTexEnvfv), H(glGetTexEnviv), H(glTexGeni), H(glTexGenfv), H(glGenTextures),
     H(glDeleteTextures), H(glBindTexture), H(glTexParameteri), H(glTexParameterf), H(glTexImage2D),
     H(glTexSubImage2D), H(glReadPixels), H(glActiveTextureARB), H(glVertexPointer), H(glNormalPointer),
+    H(glCompressedTexImage1D), H(glCompressedTexImage2D), H(glCompressedTexImage3D),
+    H(glCompressedTexSubImage1D), H(glCompressedTexSubImage2D), H(glCompressedTexSubImage3D),
+    H(glGetCompressedTexImage), H(glGetTexLevelParameteriv),
+    {"glCompressedTexImage1DARB", glCompressedTexImage1D_},
+    {"glCompressedTexImage2DARB", glCompressedTexImage2D_},
+    {"glCompressedTexImage3DARB", glCompressedTexImage3D_},
+    {"glCompressedTexSubImage1DARB", glCompressedTexSubImage1D_},
+    {"glCompressedTexSubImage2DARB", glCompressedTexSubImage2D_},
+    {"glCompressedTexSubImage3DARB", glCompressedTexSubImage3D_},
+    {"glGetCompressedTexImageARB", glGetCompressedTexImage_},
     H(glColorPointer), H(glTexCoordPointer), H(glEnableClientState), H(glDisableClientState),
-    H(glClientActiveTextureARB), H(glDrawArrays), H(glDrawElements), H(glArrayElement), H(glLockArraysEXT),
+    H(glClientActiveTextureARB), H(glDrawArrays), H(glDrawElements), H(glDrawRangeElements),
+    {"glDrawRangeElementsEXT", glDrawRangeElements_}, H(glArrayElement), H(glLockArraysEXT),
     H(glUnlockArraysEXT),
 };
 #undef H
 
 const HookSpec kAGL[] = {
     {"aglChoosePixelFormat", aglChoosePixelFormat},
-    {"aglDestroyPixelFormat", agl_true},
+    {"aglChoosePixelFormatCFM", aglChoosePixelFormat},
+    {"aglQueryRendererInfo", aglQueryRendererInfo},
+    {"aglQueryRendererInfoCFM", aglQueryRendererInfo},
+    {"aglNextRendererInfo", aglNextRendererInfo},
+    {"aglDescribeRenderer", aglDescribeRenderer},
+    {"aglDestroyRendererInfo", aglDestroyRendererInfo},
+    {"aglCreateContextCFM", aglCreateContext},
+    {"aglDescribePixelFormat", aglDescribePixelFormat},
+    {"aglDisable", aglDisable},
+    {"aglDestroyPixelFormat", aglDestroyPixelFormat},
     {"aglCreateContext", aglCreateContext},
     {"aglDestroyContext", aglDestroyContext},
     {"aglSetCurrentContext", aglSetCurrentContext},
@@ -1058,13 +2068,39 @@ const HookSpec kAGL[] = {
     {"aglSetFullScreen", aglSetFullScreen},
     {"aglSetInteger", agl_true},
     {"aglConfigure", agl_true},
-    {"aglGetError", agl_zero},
+    {"aglGetError", aglGetError},
     {"aglErrorString", aglErrorString},
+};
+const HookSpec kGLU[] = {
+    {"gluOrtho2D", gluOrtho2D}, {"gluPerspective", gluPerspective_},
+    {"gluNewQuadric", gluNewQuadric_}, {"gluDeleteQuadric", gluDeleteQuadric_},
+    {"gluQuadricNormals", gluQuadricNormals_}, {"gluQuadricTexture", gluQuadricTexture_},
+    {"gluSphere", gluSphere_}, {"gluCylinder", gluCylinder_}, {"gluBuild2DMipmaps", gluBuild2DMipmaps_},
+};
+const HookSpec kCGL[] = {
+    {"CGLChoosePixelFormat", cglChoosePixelFormat},
+    {"CGLDescribePixelFormat", cglDescribePixelFormat},
+    {"CGLDestroyPixelFormat", cglDestroyPixelFormat},
+    {"CGLRetainPixelFormat", cglRetainPixelFormat},
+    {"CGLReleasePixelFormat", cglReleasePixelFormat},
+    {"CGLCreateContext", cglCreateContext},
+    {"CGLDestroyContext", cglDestroyContext},
+    {"CGLRetainContext", cglRetainContext},
+    {"CGLReleaseContext", cglReleaseContext},
+    {"CGLClearDrawable", cglClearDrawable},
+    {"CGLSetFullScreen", cglSetFullScreen},
+    {"CGLSetFullScreenOnDisplay", cglSetFullScreenOnDisplay},
+    {"CGLSetSurface", cglSetSurface},
+    {"CGLUpdateContext", cglUpdateContext},
+    {"CGLSetParameter", cglSetParameter},
+    {"CGLFlushDrawable", cglFlushDrawable},
 };
 
 const HookLibrary kLibraries[] = {
     {"/OpenGL.framework/Versions/A/Libraries/libGL.dylib", "gl", kGL, sizeof kGL / sizeof kGL[0], true},
     {"/AGL.framework/Versions/A/AGL", "agl", kAGL, sizeof kAGL / sizeof kAGL[0], true},
+    {"/OpenGL.framework/Versions/A/Libraries/libGLU.dylib", "", kGLU, sizeof kGLU / sizeof kGLU[0], true},
+    {"/OpenGL.framework/Versions/A/OpenGL", "", kCGL, sizeof kCGL / sizeof kCGL[0], true},
 };
 
 }  // namespace

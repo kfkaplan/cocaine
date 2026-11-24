@@ -12,10 +12,11 @@ environment variables, none of which change anything unless set:
 | `COCAINE_DAEMONS=all`, `none`, or labels | which of Apple's daemons the session may start, instead of the usual list |
 | `COCAINE_NO_VIEWER=1` | don't open the viewer window |
 | `COCAINE_DUMP=address:bytes:seconds:file` | write that guest memory (hexadecimal address) to `file.<pid>` after that long |
-| `COCAINE_SCRIPT="wait 20; click 300 400; key 28 56; shot /tmp/a.raw"` | play mouse and key actions into the guest's input system: `wait`, `move`, `down`, `up`, `dragto`, `click`, `drag`, `key`; `settle` and `change X Y W H` time how fast the window server and the display respond; `shot FILE` saves the display (see `run_input_script` in `src/kernel/iokit.cpp`) |
+| `COCAINE_SCRIPT="wait 20; click 300 400; key 28 56; shot /tmp/a.raw"` | play mouse and key actions into the guest's input system: `wait`, `move`, `down`, `up`, `dragto`, `click`, `drag`, `key`; `settle` and `change X Y W H` time how fast the window server and the display respond; `shot FILE` saves the published display at its current mode's dimensions, without forcing a refresh (see `run_input_script` in `src/kernel/iokit.cpp`) |
 | `COCAINE_POKE=x,y,seconds` | short for a script that, after that long, clicks at x,y and types 8 and 9 |
 | `COCAINE_NOTE_INPUT=1` | for three seconds after each click or key, log every message the window server sends and receives, with times |
 | `COCAINE_VIEWER_SNAPSHOT=file.png` | have the viewer save what its window shows, twelve seconds in |
+| `COCAINE_VIEWER_DOUBLE=0` | show one screen pixel per guest pixel where it fits, instead of the default two (the launcher sets `1` for Ghost Recon Demo unless inherited) |
 | `COCAINE_NOTE_MSG=number,first-last` | log every process that sends one of those Mach requests, and the answer it gets |
 | `COCAINE_CALLS=address,address` | log each call a PowerPC guest makes to one of those addresses, with its arguments |
 | `COCAINE_WATCH=address` | log each PowerPC store of a word to that address, and the code that made it |
@@ -29,11 +30,11 @@ environment variables, none of which change anything unless set:
 | `COCAINE_FAULT_MEM=r6:160,@2eebd0:16` | when a PowerPC guest crashes, also print memory at those registers or addresses (the crash report always names the library each caller is in) |
 | `COCAINE_NAN=1` | report the first places a PowerPC guest's floating point arithmetic makes a NaN out of numbers, with the inputs (interpreted, so slow) |
 | `COCAINE_GL_FRAME=n:file` | save OpenGL frame n, as cocaine read it back from the Mac's GPU, to `file` (raw, A R G B, bottom row first) |
-| `COCAINE_GL_FPS=60` | the most frames a second an OpenGL game is shown at (60 unless set, as vertical sync held games to on a Mac of the time; 0 for no limit) |
-| `COCAINE_DISPLAY=1280x1024` | the guest display's size (2560 x 1600 unless told otherwise; the tests use 1280 x 1024) |
+| `COCAINE_GL_FPS=60` | the most frames a second an OpenGL game is shown at (120 unless set; 0 for no limit) |
+| `COCAINE_DISPLAY=1280x1024` | the guest display's size (2560 x 1600 unless told otherwise; Postal 2 defaults to 1024 x 768 with doubled viewer pixels; the tests use 1280 x 1024) |
 | `COCAINE_WALLPAPER=path` | the guest's desktop picture, a JPEG or PNG on this Mac (`images/linen.jpeg` by default, else Leopard's `DefaultDesktop.jpg`); `none` leaves the window server's plain grey (see `src/kernel/wallpaper.cpp`) |
 | `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the guest's menu bar instead of cocaine's (a pile of powder, drawn in each logo's colour into a copy of Leopard's art file, `.cocaine/art/` in the system root; see `src/session/art.cpp`) |
-| `COCAINE_UI_SCALE=1` | how many times bigger Leopard draws everything (2 on a display 2560 or more wide, else 1) |
+| `COCAINE_UI_SCALE=1` | how many times bigger Leopard draws everything (2 on a display 2560 or more wide, else 1; dynamically linked SDL 1.2 games default to 1 for QuickDraw compatibility). An explicit value overrides these defaults |
 | `COCAINE_AL_DUMP=dir` | write each buffer of sound a game hands OpenAL to `dir`, one raw file each, 16-bit samples in this Mac's byte order, named by order, buffer, format and rate (see `src/al/al.cpp`) |
 | `COCAINE_AL_TRACE=1` | log each OpenAL call that leaves an error, and the source, listener and buffer-name calls with their arguments |
 | `COCAINE_AUDIO_DUMP=file` | also write everything the guest plays to `file`, as raw 44.1 kHz stereo 32-bit floats |
@@ -82,6 +83,11 @@ server, the font server, the login window and the whole input path). If the
 keys for the Intel system programs aren't there, the Intel one must instead
 get as far as it can: through Launch Services to asking for the window
 server.
+
+The volume test always checks the guest root. To exercise a mounted disk
+image too, set `COCAINE_TEST_VOLUME` to its `/Volumes/...` mount point before
+running the suite. Optionally set `COCAINE_TEST_VOLUME_MARKER` to a file
+relative to that mount; the test checks it through both the mount and `/.vol`.
 
 The built guest programs live in `tests/bin/`, so running the tests needs
 nothing extra. Rebuilding them after an edit needs Homebrew LLVM for the

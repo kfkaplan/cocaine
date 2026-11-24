@@ -52,6 +52,7 @@ std::vector<Entry> build_table(Arch arch) {
       {"kern.exec_archhandler", 1, 45, T, 0,
        ppc ? "/System/Library/CoreServices/Classic Startup.app/Contents/Resources/TruBlueEnvironment"
            : "/usr/libexec/oah/translate"},
+      {"kern.procname", 1, 62, T, 0, ""},
       {"kern.osversion", 1, 65, T, 0, "9A581"},
       {"kern.safeboot", 1, 66, I, 0, ""},
       // hw.*
@@ -125,11 +126,11 @@ SysRet Process::sys_sysctl(u32 name, u32 namelen, u32 oldp, u32 oldlenp, u32 new
   // the data only if a buffer was given and is big enough.
   auto answer = [&](const void* data, u32 size) -> SysRet {
     if (!oldlenp) return SysRet::ok();
-    if (!mem_.range_ok(oldlenp, 4)) return SysRet::err(EFAULT);
+    if (!mem_.range_ok(oldlenp, 4, GuestMemory::kRead | GuestMemory::kWrite)) return SysRet::err(EFAULT);
     const u32 room = mem_.r32(oldlenp);
     mem_.w32(oldlenp, size);
     if (!oldp) return SysRet::ok();
-    if (!mem_.range_ok(oldp, room < size ? room : size)) return SysRet::err(EFAULT);
+    if (!mem_.range_ok(oldp, room < size ? room : size, GuestMemory::kWrite)) return SysRet::err(EFAULT);
     memcpy(mem_.host(oldp), data, room < size ? room : size);
     return room < size ? SysRet::err(ENOMEM) : SysRet::ok();
   };
@@ -144,6 +145,25 @@ SysRet Process::sys_sysctl(u32 name, u32 namelen, u32 oldp, u32 oldlenp, u32 new
     if (mem_.big_endian()) v = __builtin_bswap32(v);
     return answer(&v, 4);
   };
+
+  // The current process name is writable, and short output buffers receive
+  // a terminated, truncated name rather than ENOMEM.
+  if (namelen == 2 && mib[0] == 1 && mib[1] == 62) {
+    std::lock_guard<std::mutex> lk(proc_name_mu_);
+    std::string old = proc_name_;
+    if (oldp && oldlenp) {
+      if (!mem_.range_ok(oldlenp, 4, GuestMemory::kRead)) return SysRet::err(EFAULT);
+      const u32 room = mem_.r32(oldlenp);
+      if (room && room <= old.size()) old.resize(room - 1);
+    }
+    const SysRet result = answer(old.c_str(), (u32)old.size() + 1);
+    if (result.kind == SysRet::Error || !newp) return result;
+    if (newlen > 32) return SysRet::err(EINVAL);
+    if (!mem_.range_ok(newp, newlen, GuestMemory::kRead)) return SysRet::err(EFAULT);
+    const char* value = (const char*)mem_.host(newp);
+    proc_name_.assign(value, strnlen(value, newlen));
+    return SysRet::ok();
+  }
 
   // {0, 3}: translate a text name into numbers.
   if (namelen == 2 && mib[0] == 0 && mib[1] == 3) {
@@ -274,8 +294,8 @@ bool Process::describe_process(int pid, GuestProcess& out) const {
   out.name = kp.kp_proc.p_comm;
   if (pid == getpid()) {
     if (opt_.as_root) out.uid = out.gid = 0;
-    const size_t slash = exe_path_.rfind('/');
-    out.name = slash == std::string::npos ? exe_path_ : exe_path_.substr(slash + 1);
+    std::lock_guard<std::mutex> lk(proc_name_mu_);
+    out.name = proc_name_;
     return true;
   }
 

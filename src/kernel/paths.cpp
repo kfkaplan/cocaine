@@ -8,10 +8,13 @@
 
 #include <fcntl.h>
 #include <pwd.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <climits>
+#include <cstdlib>
 
 #include "kernel/process.h"
 #include "session/art.h"
@@ -123,6 +126,21 @@ std::string tidy(const std::string& path) {
   return out.empty() ? "/" : out;
 }
 
+std::string mounted_volume(unsigned long long device) {
+  std::vector<struct statfs> mounts;
+  const int error = mounted_volumes(mounts, MNT_NOWAIT);
+  if (error) {
+    log_warn("cannot list mounted volumes: %s", strerror(error));
+    return "";
+  }
+  for (const struct statfs& fs : mounts) {
+    struct stat st;
+    if (stat(fs.f_mntonname, &st) == 0 && device == (unsigned long long)st.st_dev)
+      return fs.f_mntonname;
+  }
+  return "";
+}
+
 // The part of a home folder the guest system keeps to itself. A home folder
 // is this Mac's own, so that an old program can open the documents kept
 // there. But its Library is where programs keep their settings, caches and
@@ -152,9 +170,36 @@ std::string private_home_path(const std::string& root, const std::string& path) 
 
 }  // namespace
 
+int mounted_volumes(std::vector<struct statfs>& volumes, int flags) {
+  int count = getfsstat(nullptr, 0, flags);
+  if (count < 0) return errno;
+  std::vector<struct statfs> mounts;
+  int got;
+  do {
+    mounts.resize((size_t)count + 16);
+    got = getfsstat(mounts.data(), (int)(mounts.size() * sizeof(struct statfs)), flags);
+    if (got < 0) return errno;
+    count = got;
+  } while ((size_t)got == mounts.size());
+  volumes.clear();
+  for (int i = 0; i < got; i++) {
+    const struct statfs& fs = mounts[(size_t)i];
+    if (strncmp(fs.f_mntonname, "/Volumes/", 9) == 0 && !(fs.f_flags & MNT_DONTBROWSE))
+      volumes.push_back(fs);
+  }
+  return 0;
+}
+
+std::string Process::bundled_wallpaper_path() const {
+  std::string dir = opt_.self_path;
+  for (int up = 0; up < 2 && dir.rfind('/') != std::string::npos; up++) dir.erase(dir.rfind('/'));
+  return dir + "/images/linen.jpeg";
+}
+
 std::string Process::host_path(const std::string& guest, bool follow_last) const {
   const std::string& root = opt_.sysroot;
   if (root.empty() || guest.empty()) return guest;
+  if (guest == "/.cocaine/linen.jpeg") return bundled_wallpaper_path();
   if (guest[0] != '/') {
     // A relative path is this Mac's business, except one that leads into
     // the private part of the home folder from the folder above it.
@@ -204,18 +249,36 @@ std::string Process::host_path(const std::string& guest, bool follow_last) const
   if (path.compare(0, 6, "/.vol/") == 0) {
     const std::vector<std::string> parts = split(path.substr(6));
     if (parts.size() >= 2) {
-      std::string folder;
-      if (parts[1] == "2") {
-        folder = "";
-      } else {
-        const int fd = open(("/.vol/" + parts[0] + "/" + parts[1]).c_str(), O_RDONLY);
-        char real[PATH_MAX];
-        const bool found = fd >= 0 && fcntl(fd, F_GETPATH, real) == 0;
-        if (fd >= 0) close(fd);
-        if (!found) return path;
-        folder = guest_path(real);
-        if (folder == "/") folder = "";
+      if (parts[1] == "@" || parts[1] == "2") {
+        // Carbon uses @ or folder ID 2 for a volume root.
+        char* end = nullptr;
+        errno = 0;
+        const unsigned long long device = strtoull(parts[0].c_str(), &end, 10);
+        const bool valid = !parts[0].empty() && parts[0][0] >= '0' && parts[0][0] <= '9' &&
+                           !errno && !*end;
+        struct stat st;
+        if (valid && stat(root.c_str(), &st) == 0 && device == (unsigned long long)st.st_dev) {
+          std::string suffix;
+          for (size_t i = 2; i < parts.size(); i++) suffix += "/" + parts[i];
+          return suffix.empty() ? root : host_path(suffix, follow_last);
+        }
+        if (valid) {
+          std::string volume = mounted_volume(device);
+          if (!volume.empty()) {
+            for (size_t i = 2; i < parts.size(); i++) volume += "/" + parts[i];
+            return host_path(tidy(volume), follow_last);
+          }
+        }
+        return path;
       }
+      std::string folder;
+      const int fd = open(("/.vol/" + parts[0] + "/" + parts[1]).c_str(), O_RDONLY);
+      char real[PATH_MAX];
+      const bool found = fd >= 0 && fcntl(fd, F_GETPATH, real) == 0;
+      if (fd >= 0) close(fd);
+      if (!found) return path;
+      folder = guest_path(real);
+      if (folder == "/") folder = "";
       for (size_t i = 2; i < parts.size(); i++) folder += "/" + parts[i];
       return host_path(folder.empty() ? "/" : folder, follow_last);
     }

@@ -1,15 +1,17 @@
 // A sliver of IOKit: the registry of devices and drivers.
 //
 // Programs reach IOKit through the "master" port and get further ports for
-// the registry entries, iterators and connections they ask for. There are no
-// devices here, so nearly every search comes back empty. The one thing that
-// exists is the power-management root, because long-running programs (every
-// system daemon, any app with a run loop) register with it to hear about
-// sleep and wake, and some treat failing to as fatal. Nothing is ever
-// announced: this machine, as far as the guest can tell, never sleeps.
+// the registry entries, iterators and connections they ask for. Most device
+// searches come back empty. The power-management root exists because
+// long-running programs (every system daemon, any app with a run loop)
+// register with it to hear about sleep and wake, and some treat failure as
+// fatal. Nothing is ever announced: the guest never sleeps.
 
 #include <algorithm>
+#include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/IOKitLib.h>
 #include <mach/mach.h>
+#include <sys/mount.h>
 
 #include <set>
 #include <ctime>
@@ -17,6 +19,7 @@
 #include <signal.h>
 #include <thread>
 
+#include "kernel/input_notify.h"
 #include "kernel/mach_message.h"
 #include "kernel/process.h"
 #include "viewer/viewer.h"
@@ -38,6 +41,8 @@ enum : u32 {
   kRegistryRoot,
   kHIDSystem,      // the input system: keyboards and mice, as one event queue
   kHIDConnection,
+  kMountedMedia,
+  kOpticalMedia,
 };
 
 // The input system's shared memory, laid out as Mac OS X 10.5 has it: two
@@ -69,6 +74,69 @@ enum : u32 {
   kKeyDown = 10, kKeyUp = 11, kModifiersChanged = 12, kScrollWheel = 22,
 };
 constexpr u32 kEvQueue = kEvGlobals + 224, kEvQueueLength = 240;  // each slot is 96 bytes
+
+bool mounted_optical_image(const std::string& bsd) {
+  std::vector<struct statfs> mounts;
+  const int error = mounted_volumes(mounts, MNT_NOWAIT);
+  if (error) {
+    log_warn("cannot list mounted volumes: %s", strerror(error));
+    return false;
+  }
+  bool mounted = false;
+  for (const struct statfs& fs : mounts) {
+    if (std::string(fs.f_mntfromname) == "/dev/" + bsd) {
+      mounted = true;
+      break;
+    }
+  }
+  if (!mounted) return false;
+  io_service_t media = IOServiceGetMatchingService(kIOMainPortDefault,
+                                                   IOBSDNameMatching(kIOMainPortDefault, 0, bsd.c_str()));
+  if (!media) {
+    log_warn("cannot find IOKit media for mounted volume %s", bsd.c_str());
+    return false;
+  }
+  bool optical = IOObjectConformsTo(media, "IOCDMedia") || IOObjectConformsTo(media, "IODVDMedia");
+  io_iterator_t parents = IO_OBJECT_NULL;
+  const kern_return_t result = IORegistryEntryCreateIterator(
+      media, kIOServicePlane, kIORegistryIterateRecursively | kIORegistryIterateParents, &parents);
+  if (result != KERN_SUCCESS) {
+    log_warn("cannot inspect mounted media %s: 0x%x", bsd.c_str(), result);
+  } else {
+    io_object_t entry;
+    while ((entry = IOIteratorNext(parents))) {
+      optical |= IOObjectConformsTo(entry, "AppleDiskImageDevice") ||
+                 IOObjectConformsTo(entry, "IOCDMedia") || IOObjectConformsTo(entry, "IODVDMedia");
+      IOObjectRelease(entry);
+    }
+    IOObjectRelease(parents);
+  }
+  IOObjectRelease(media);
+  return optical;
+}
+
+std::string matching_bsd_name(const std::string& xml) {
+  CFDataRef data = CFDataCreate(kCFAllocatorDefault, (const UInt8*)xml.data(), (CFIndex)xml.size());
+  if (!data) return "";
+  CFPropertyListRef plist = CFPropertyListCreateWithData(kCFAllocatorDefault, data,
+                                                          kCFPropertyListImmutable, nullptr, nullptr);
+  CFRelease(data);
+  std::string result;
+  if (plist && CFGetTypeID(plist) == CFDictionaryGetTypeID() &&
+      CFDictionaryGetCount((CFDictionaryRef)plist) == 1) {
+    CFTypeRef properties = CFDictionaryGetValue((CFDictionaryRef)plist, CFSTR("IOPropertyMatch"));
+    if (properties && CFGetTypeID(properties) == CFDictionaryGetTypeID() &&
+        CFDictionaryGetCount((CFDictionaryRef)properties) == 1) {
+      CFTypeRef name = CFDictionaryGetValue((CFDictionaryRef)properties, CFSTR("BSD Name"));
+      char bsd[128];
+      if (name && CFGetTypeID(name) == CFStringGetTypeID() &&
+          CFStringGetCString((CFStringRef)name, bsd, sizeof bsd, kCFStringEncodingUTF8))
+        result = bsd;
+    }
+  }
+  if (plist) CFRelease(plist);
+  return result;
+}
 
 }  // namespace
 
@@ -118,6 +186,7 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
       made = new_kport(KObject::IOObject);
       kports_[made].io = kIterator;
       kports_[made].item = item;
+      kports_[made].initial_item = item;
     }
     give_send(made);
     Message m(be, local, id + 100, true);
@@ -133,6 +202,8 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
     case 2800: {  // io_object_get_class
       const char* cls = port.io == kPowerRoot  ? "IOPMrootDomain"
                         : port.io == kHIDSystem ? "IOHIDSystem"
+                        : port.io == kOpticalMedia ? "IOCDMedia"
+                        : port.io == kMountedMedia ? "IOMedia"
                                                 : "IOService";
       Message m(be, local, id + 100);
       m.ndr();
@@ -147,6 +218,19 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
         memcpy(&v, word, 4);
         m.put(be ? __builtin_bswap32(v) : v);  // put() swaps back: the bytes go out in order
       }
+      reply = m.finish();
+      return true;
+    }
+    case 2801: {  // io_object_conforms_to
+      const std::string cls = string_at(32);
+      const bool media = port.io == kMountedMedia || port.io == kOpticalMedia;
+      if (!media) return false;
+      const bool conforms = cls == "IOMedia" || cls == "IOService" ||
+                            (port.io == kOpticalMedia && cls == "IOCDMedia");
+      Message m(be, local, id + 100);
+      m.ndr();
+      m.put(KERN_SUCCESS);
+      m.put(conforms ? 1 : 0);
       reply = m.finish();
       return true;
     }
@@ -275,19 +359,63 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
       reply = m.finish();
       return true;
     }
-    case 2803:  // io_iterator_reset
+    case 2803: {  // io_iterator_reset
+      std::lock_guard<std::mutex> lk(kmu_);
+      const auto it = kports_.find(name);
+      if (it != kports_.end()) it->second.item = it->second.initial_item;
+      return code(KERN_SUCCESS);
+    }
     case 2816:  // io_service_close
       return code(KERN_SUCCESS);
     case 2804: {  // io_service_get_matching_services(what to match) -> iterator
-      // Nothing matches. What was wanted is noted (with -v), as the list of
-      // devices programs expect to find.
+      // Other searches are noted (with -v), as the list of devices programs expect.
       const std::string what = string_at(32);
+      const std::string bsd = matching_bsd_name(what);
+      if (!bsd.empty() && mounted_optical_image(bsd)) return iterator(kMountedMedia);
       static std::set<std::string> seen;
       static std::mutex seen_mu;
       std::lock_guard<std::mutex> lk(seen_mu);
       if (what.find(">IOHIDSystem<") != std::string::npos) return iterator(kHIDSystem);
       if (seen.insert(what).second) log_info("a program searched IOKit for %s", what.c_str());
       return iterator(0);
+    }
+    case 2833: {  // io_registry_entry_create_iterator
+      const u32 n = size >= 40 ? mem_.r32(msg + 36) : 0;
+      const u32 options_at = 40 + ((n + 3) & ~3u);
+      if (port.io == kMountedMedia && size >= 40 && n <= size - 40 && options_at + 4 <= size &&
+          string_at(32) == "IOService" && mem_.r32(msg + options_at) == 3)
+        return iterator(kOpticalMedia);
+      return code(kUnsupported);
+    }
+    case 2835: {  // io_make_matching: Leopard's IOBSDNameMatching
+      if (size < 45 || mem_.r32(msg + 32) != 101) return code(kUnsupported);
+      const u32 n = mem_.r32(msg + 40);
+      if (!n || n > size - 44 || n > 127) return code(kUnsupported);
+      std::string bsd;
+      for (u32 i = 0; i < n && mem_.r8(msg + 44 + i); i++) {
+        const char c = (char)mem_.r8(msg + 44 + i);
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == '.'))
+          return code(kUnsupported);
+        bsd += c;
+      }
+      if (bsd.empty()) return code(kUnsupported);
+      const std::string xml = "<dict><key>IOPropertyMatch</key><dict><key>BSD Name</key><string>" +
+                              bsd + "</string></dict></dict>";
+      Message m(be, local, id + 100);
+      m.ndr();
+      m.put(KERN_SUCCESS);
+      m.put(0);
+      m.put((u32)xml.size() + 1);
+      for (size_t i = 0; i <= xml.size(); i += 4) {
+        u8 bytes[4] = {};
+        for (size_t j = 0; j < 4 && i + j < xml.size(); j++) bytes[j] = (u8)xml[i + j];
+        u32 word;
+        memcpy(&word, bytes, 4);
+        m.put(be ? __builtin_bswap32(word) : word);
+      }
+      reply = m.finish();
+      return true;
     }
     case 2809: {  // io_registry_entry_from_path(path) -> entry
       const std::string path = string_at(32);
@@ -324,10 +452,24 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
       return object(kNotification);
     case 2851:  // io_service_acknowledge_notification
       return code(KERN_SUCCESS);
-    case 2805:  // io_registry_entry_get_property(name) -> value
-      // No object here has properties to give (the menu bar asks the root
-      // for IOConsoleUsers, the login sessions, each time a menu opens).
+    case 2805: {  // io_registry_entry_get_property(name) -> value
+      if (port.io == kOpticalMedia && string_at(32) == "Whole") {
+        const char value[] = "<true/>";
+        const u32 at = mem_.find_free(0x1000, 0x1000, 0xC0000000u);
+        if (!at || !mem_.map(at, 0x1000, GuestMemory::kRead | GuestMemory::kWrite))
+          return code(KERN_NO_SPACE);
+        memcpy(mem_.host(at), value, sizeof value);
+        Message m(be, local, id + 100, true);
+        m.put(1);
+        m.ool_data(at, sizeof value);
+        m.ndr();
+        m.put(sizeof value);
+        reply = m.finish();
+        return true;
+      }
+      // The menu bar also asks the root for IOConsoleUsers, the login sessions.
       return code(kNotFound);
+    }
   }
   (void)name;
   return false;
@@ -432,8 +574,8 @@ bool Process::io_memory(const KPort& port, u32 type, u32& address, u32& size) {
 //                             and log how long that took and how far behind it got
 //   change X Y W H            wait for that part of the display to change, and
 //                             log how long it took (measures from the command before)
-//   shot FILE                 write the display's pixels to FILE (four bytes each,
-//                             a display's width to a row), if this process holds the display
+//   shot FILE                 write the published display to FILE (four bytes each,
+//                             a display's width to a row), if this process holds it
 void Process::run_input_script(const std::string& script) {
   auto pause = [](double seconds) { usleep((useconds_t)(seconds * 1e6)); };
   auto depth = [this]() -> u32 {
@@ -504,12 +646,19 @@ void Process::run_input_script(const std::string& script) {
       // the display to look different, and log how long it took.
       const u32 rx = (u32)v[0], ry = (u32)v[1], rw = (u32)v[2], rh = (u32)v[3];
       u32 dw = 0, dh = 0;
-      guest_display_size(dw, dh);
-      if (!display_at_ || rx + rw > dw || ry + rh > dh || !rw || !rh) continue;
+      if (display_file_) {
+        std::lock_guard<std::mutex> lk(publish_mu_);
+        dw = display_w_;
+        dh = display_h_;
+      }
+      if (!display_file_ || (u64)rx + rw > dw || (u64)ry + rh > dh || !rw || !rh) continue;
       auto grab = [&] {
         std::vector<u8> px;
+        std::lock_guard<std::mutex> lk(publish_mu_);
+        if ((u64)rx + rw > display_w_ || (u64)ry + rh > display_h_) return px;
+        const u8* pixels = display_file_ + sizeof(DisplayFileHeader);
         for (u32 row = 0; row < rh; row++) {
-          const u8* from = mem_.host(display_at_ + ((ry + row) * dw + rx) * 4);
+          const u8* from = pixels + ((size_t)(ry + row) * display_w_ + rx) * 4;
           px.insert(px.end(), from, from + rw * 4);
         }
         return px;
@@ -526,13 +675,16 @@ void Process::run_input_script(const std::string& script) {
                (unsigned long long)((clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - from) / 1000000));
     } else if (w == "shot" && sscanf(line.c_str(), " %*s %511s", text) == 1) {
       u32 dw = 0, dh = 0;
-      guest_display_size(dw, dh);
-      const u32 bytes = dw * dh * 4;
-      if (display_at_ && mem_.range_ok(display_at_, bytes)) {
+      if (display_file_) {
+        std::lock_guard<std::mutex> lk(publish_mu_);
+        dw = display_w_;
+        dh = display_h_;
+        const u32 bytes = dw * dh * 4;
         if (FILE* f = fopen(text, "wb")) {
-          fwrite(mem_.host(display_at_), 1, bytes, f);
+          if (fwrite(display_file_ + sizeof(DisplayFileHeader), 1, bytes, f) != bytes)
+            log_warn("input script: could not write the display picture to %s", text);
           fclose(f);
-        }
+        } else log_warn("input script: could not open %s for the display picture", text);
       } else {
         log_warn("input script: no display to take a picture of yet");
       }
@@ -587,6 +739,10 @@ void Process::set_pointer(s32 x, s32 y) {
 // many lines down and across.
 void Process::post_input_event(u32 type, s32 x, s32 y, u32 key, u32 extra, s32 more) {
   std::lock_guard<std::mutex> lk(hid_mu_);
+  if (type == kViewerCaptureChanged) {
+    hid_viewer_captured_ = x != 0;
+    return;
+  }
   if (!hid_memory_) return;
   if (getenv("COCAINE_NOTE_INPUT") && type != kMoved) {  // for working on cocaine: note what follows
     note_from_ = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
@@ -595,14 +751,20 @@ void Process::post_input_event(u32 type, s32 x, s32 y, u32 key, u32 extra, s32 m
   const EvLayout& l = mem_.big_endian() ? kEvPowerPC : kEvIntel;
   const u32 g = hid_memory_ + kEvGlobals;
   const bool moved = type == kMoved || type == kLeftDragged || type == kRightDragged;
-  const bool held = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) < hid_relative_until_;
+  const bool held = hid_viewer_captured_ || clock_gettime_nsec_np(CLOCK_UPTIME_RAW) < hid_relative_until_;
   s32 dx = 0, dy = 0;
   if (moved) {
     dx = more == 1 ? (s32)key : x - hid_x_;
     dy = more == 1 ? (s32)extra : y - hid_y_;
     if (held) {  // from where the window server put the pointer (see set_pointer)
       u32 w = 0, h = 0;
-      guest_display_size(w, h);
+      if (display_file_) {
+        const auto* display = (const DisplayFileHeader*)display_file_;
+        w = __atomic_load_n(&display->width, __ATOMIC_RELAXED);
+        h = __atomic_load_n(&display->height, __ATOMIC_RELAXED);
+      } else {
+        guest_display_size(w, h);
+      }
       x = std::clamp(hid_x_ + dx, 0, (s32)w - 1);
       y = std::clamp(hid_y_ + dy, 0, (s32)h - 1);
     }
@@ -702,12 +864,9 @@ void Process::post_input_event(u32 type, s32 x, s32 y, u32 key, u32 extra, s32 m
   __atomic_thread_fence(__ATOMIC_RELEASE);
   mem_.w32(g + l.tail, next);   // where the next will go
   if (hid_notify_) {
-    mach_msg_header_t h = {};
-    h.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
-    h.msgh_size = sizeof h;
-    h.msgh_remote_port = hid_notify_;
-    const kern_return_t kr = ::mach_msg(&h, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof h, 0,
-                                        MACH_PORT_NULL, 50, MACH_PORT_NULL);
+    // A full notification port already has a wake-up waiting; don't block
+    // the input reader behind it while more events arrive.
+    const kern_return_t kr = notify_input(hid_notify_);
     if (kr != KERN_SUCCESS && kr != MACH_SEND_TIMED_OUT) {
       log_warn("could not tell the window server about input: %s", mach_error_string(kr));
     }

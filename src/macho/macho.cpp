@@ -210,12 +210,23 @@ u32 MachImage::header_addr() const {
   return 0;
 }
 
+bool is_powerpc_pef(const u8* data, size_t size) {
+  return size >= 40 && !memcmp(data, "Joy!peffpwpc", 12) &&
+         read_be32(data + 12) == 1 && (data[32] || data[33]);
+}
+
 bool load_macho(const std::string& path, std::optional<Arch> want, MachImage& out,
                 std::string& err) {
   std::vector<u8> file;
   if (!read_file(path, file, err)) return false;
   if (file.size() < 8) {
     err = path + ": not a Mach-O file";
+    return false;
+  }
+  if (is_powerpc_pef(file.data(), file.size())) {
+    err = path + (want && *want == Arch::I386
+                      ? ": is a PowerPC PEF/CFM file, not i386"
+                      : ": PowerPC PEF/CFM files must be launched through LaunchCFMApp");
     return false;
   }
 

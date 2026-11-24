@@ -46,6 +46,8 @@ enum : u32 {
   kMachBundle = 8,
 };
 
+bool is_powerpc_pef(const u8* data, size_t size);
+
 // Reads `path` and picks one slice. `want` forces an architecture; without it
 // a universal file gives its PowerPC slice if it has one, else Intel.
 bool load_macho(const std::string& path, std::optional<Arch> want, MachImage& out,

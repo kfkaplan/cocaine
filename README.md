@@ -15,16 +15,22 @@ The guest system's screen appears in a window on your Mac.
 
 - **Apps with windows, on both CPUs -** Calculator, VLC 0.9.10, Transmission 1.54 and others run
   on Leopard's own window server, with the mouse, keyboard and scroll wheel.
-  The display is drawn at twice the pixels, so it looks sharp on a Retina
+  Most apps are drawn at twice the pixels, so they look sharp on a Retina
   screen.
 - **Games -** Marble Blast Gold (both halves of the universal build) plays at
-  60 frames a second with music and sound. OpenGL and OpenAL calls go to your
-  Mac's own graphics and sound.
+  60 frames a second with music and sound; GL Golf draws its course.
+  Postal 2 draws its startup warning, animated intro and menu, using a
+  1024 x 768 display with doubled viewer pixels where they fit. Compressed
+  font textures keep their full resolution.
+  OpenGL and OpenAL calls go to your Mac's own graphics and sound.
 - **Sound -** VLC plays MP3s through your Mac's speakers.
+- **Mounted disk images -** browsable images mounted under `/Volumes` are
+  visible to guests, including to installers that look for a CD.
 - **Command line tools, shells and scripting languages -** from Leopard -
   `ls`, `bash`, `zsh`, Python 2.5, Perl, Ruby and the rest.
 
-Closing the cocaine window ends the run
+The cocaine window follows guest display resolution changes, using two screen
+pixels per guest pixel where they fit. Closing it ends the run.
 
 ## The cocaine app
 
@@ -37,7 +43,13 @@ setting up and running for you, in three tabs
   system root, readable only by you.
 - **Run -** pick an old app or drop one on it, choose Auto, PowerPC or
   Intel, and run it. Closing its window, or pressing stop, ends it. Kill All
-  ends every cocaine process on your Mac.
+  ends every cocaine process on your Mac. Ghost Recon Demo uses an 800 x 600
+  display and doubled viewer pixels where they fit, unless `COCAINE_DISPLAY`
+  or `COCAINE_VIEWER_DOUBLE` was set explicitly. OpenGL apps run at up to
+  120 frames a second by default to reduce input latency, at the cost of more
+  power; `COCAINE_GL_FPS=60` restores the previous limit. Press Command-Option-M in
+  the guest window to capture or release the mouse; capture also releases
+  when the window loses focus.
 
 When it opens it checks GitHub for a newer version of itself and asks before updating
 
@@ -55,9 +67,15 @@ It still needs the build tools below. You can build it yourself with `gui/build.
   and the old kernel decrypted them with keys read from the hardware. Put the
   64 characters (`OSK0` then `OSK1`) in `sysroots/10.5/.cocaine/osk`, or in
   the `COCAINE_OSK` variable. They aren't in this repository and must stay
-  out of it. PowerPC apps need none of this, and a universal app runs its
+  out of it. Both keys must be correct: incorrect keys can make Leopard's
+  login window and font server crash, leaving a blank screen. PowerPC apps
+  need none of this, and a universal app runs its
   PowerPC half unless you ask for `--arch i386`.
 - The programs to run. None come with this repository.
+- Classic PowerPC PEF/CFM support is experimental. EV Nova 1.0.0 gets past
+  loading and monitor setup, but still stops at registration-tool initialization.
+  Ghost Recon Demo reaches gameplay, with mouse capture available. The menu
+  can be cropped unless the display starts at 800 x 600.
 
 ## Building and running
 
@@ -90,8 +108,10 @@ export COCAINE_SYSROOT=$PWD/sysroots/10.5
 </details>
 
 A window titled "cocaine: Mac OS X 10.5" opens after a few seconds, once
-Leopard's window server and login window have started. To run an app from a
-disk image, open the image on your Mac and copy the `.app` out.
+Leopard's window server and login window have started. For an installer that
+asks for a CD, mount its disk image on your Mac before running the installer.
+Mount the image containing the Mac installer and its files; a different disc
+or a Windows-only disc may not contain what the installer needs.
 
 <details>
 <summary>Environment variables</summary>
@@ -102,7 +122,7 @@ A few settings, as environment variables:
 |---|---|
 | `COCAINE_DISPLAY=1280x1024` | the guest's screen size (2560 x 1600 by default) |
 | `COCAINE_UI_SCALE=1` | how many times bigger Leopard draws everything (2 by default on a big screen) |
-| `COCAINE_GL_FPS=0` | lift the 60 frames a second cap on games |
+| `COCAINE_GL_FPS=0` | lift the 120 frames a second cap on games |
 | `COCAINE_WALLPAPER=/path/to/picture.jpg` | the desktop picture, a JPEG or PNG (`images/linen.jpeg` by default - `none` for Leopard's plain grey) |
 | `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the menu bar instead of cocaine's |
 | `COCAINE_NO_VIEWER=1` | run without the window |

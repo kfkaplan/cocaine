@@ -108,10 +108,11 @@ bool read_exports(const std::string& path, u64 slice_offset, bool big_endian, u3
       const u8 type = n[4], sect = n[5];
       // External (or private to the library's own files), defined in the
       // first section (__text), not a debugging entry.
-      if ((type & 0xE0) || (type & 0x0E) != 0x0E || !(type & 0x11) || sect != 1) continue;
       if (strx >= strs.size() || strs[strx] != '_') continue;
-      const char* name = (const char*)&strs[strx + 1];
-      out.emplace_back(std::string(name, strnlen(name, strs.size() - strx - 1)), value);
+      const std::string name((const char*)&strs[strx + 1], strnlen((const char*)&strs[strx + 1], strs.size() - strx - 1));
+      if ((type & 0xE0) || (type & 0x0E) != 0x0E || sect != 1 ||
+          (!(type & 0x11) && name != "VFBSelectMode")) continue;
+      out.emplace_back(name, value);
     }
   }
   close(fd);
@@ -158,25 +159,37 @@ constexpr u32 lfs(u32 fr, u32 ra, s32 d) { return 0xC0000000u | fr << 21 | ra <<
 // loads of the constants are pointed at the size cocaine keeps in the comm
 // page, Intel's constants (immediates in the code) are replaced, and the
 // table is rewritten in place.
-std::vector<CodePatch> display_size_patches(bool powerpc) {
+std::vector<CodePatch> display_size_patches(bool powerpc, bool leopard_1056) {
   u32 w = 0, h = 0;
   guest_display_size(w, h);
   std::vector<CodePatch> out;
   if (powerpc) {
     const s32 W = (s32)(s16)(kPPCDisplaySizeAddr & 0xFFFF), H = W + 4;
-    out = {{0xF413C, lfs(0, 26, -4460), lfs(0, 0, H)},
-           {0xF4140, lfs(13, 25, -4292), lfs(13, 0, W)},
-           {0xF41C8, lfs(13, 2, -4460), lfs(13, 0, H)},
-           {0xF41CC, lfs(0, 9, -4292), lfs(0, 0, W)}};
+    if (leopard_1056) {
+      out = {{0xF4A20, lfs(0, 26, 22596), lfs(0, 0, H)},
+             {0xF4A24, lfs(13, 25, 23136), lfs(13, 0, W)},
+             {0xF4AAC, lfs(13, 2, 22596), lfs(13, 0, H)},
+             {0xF4AB0, lfs(0, 9, 23136), lfs(0, 0, W)}};
+    } else {
+      out = {{0xF413C, lfs(0, 26, -4460), lfs(0, 0, H)},
+             {0xF4140, lfs(13, 25, -4292), lfs(13, 0, W)},
+             {0xF41C8, lfs(13, 2, -4460), lfs(13, 0, H)},
+             {0xF41CC, lfs(0, 9, -4292), lfs(0, 0, W)}};
+    }
   } else {
     const float fw = (float)w, fh = (float)h;
     u32 bw, bh;
     memcpy(&bw, &fw, 4);
     memcpy(&bh, &fh, 4);
-    out = {{0x154140, 0x44A00000u, bw}, {0x154147, 0x44800000u, bh}, {0x1541D1, 0x44A00000u, bw},
-           {0x1541D8, 0x44800000u, bh}};
+    if (leopard_1056) {
+      out = {{0x15449C, 0x44A00000u, bw}, {0x1544A3, 0x44800000u, bh}, {0x15452D, 0x44A00000u, bw},
+             {0x154534, 0x44800000u, bh}};
+    } else {
+      out = {{0x154140, 0x44A00000u, bw}, {0x154147, 0x44800000u, bh}, {0x1541D1, 0x44A00000u, bw},
+             {0x1541D8, 0x44800000u, bh}};
+    }
   }
-  const u32 table = powerpc ? 0x56C000 : 0x6904B0;
+  const u32 table = leopard_1056 ? (powerpc ? 0x56FE78 : 0x693D50) : (powerpc ? 0x56C000 : 0x6904B0);
   const u32 rows[3] = {0x540, 0xA00, 0x1400}, now[3] = {w + 64, w * 2, w * 4};
   for (u32 k = 0; k < 3; k++) {
     const u32 entry = table + 0xC8 * k;
@@ -268,21 +281,34 @@ void Process::note_code_mapping(u32 at, u32 len, int fd, u64 offset) {
   img.len = len;
   img.offset = offset;
 
+  bool known_ppc_1056 = false;
   if (ends_with(img.path, kCoreGraphics) && read_image(img)) {
     u32 done = 0;
-    const std::vector<CodePatch> patches = display_size_patches(powerpc);
-    for (const CodePatch& p : patches) {
-      const u32 where = p.addr + img.slide;
-      if (where < at || where + 4 > at + len || mem_.r32(where) != p.expect) continue;
-      mem_.w32(where, p.replace);
-      done++;
+    const size_t count = display_size_patches(powerpc, false).size();
+    for (bool leopard_1056 : {false, true}) {
+      const std::vector<CodePatch> patches = display_size_patches(powerpc, leopard_1056);
+      bool matches = true;
+      for (const CodePatch& p : patches) {
+        const u32 where = p.addr + img.slide;
+        if (where < at || (u64)where + 4 > (u64)at + len || mem_.r32(where) != p.expect) {
+          matches = false;
+          break;
+        }
+      }
+      if (!matches) continue;
+      for (const CodePatch& p : patches) {
+        mem_.w32(p.addr + img.slide, p.replace);
+        done++;
+      }
+      known_ppc_1056 = powerpc && leopard_1056;
+      break;
     }
-    if (done != patches.size()) {
+    if (done != count) {
       log_warn("this CoreGraphics is not the one cocaine knows: its display may stay 1280 x 1024");
     }
     if (const char* f = getenv("COCAINE_NOTE_PATCHES")) {
       if (FILE* out = fopen(f, "a")) {
-        fprintf(out, "%d %s: CoreGraphics at slide 0x%x: %u of %zu display patches\n", getpid(), exe_path_.c_str(), img.slide, done, patches.size());
+        fprintf(out, "%d %s: CoreGraphics at slide 0x%x: %u of %zu display patches\n", getpid(), exe_path_.c_str(), img.slide, done, count);
         fclose(out);
       }
     }
@@ -311,9 +337,12 @@ void Process::note_code_mapping(u32 at, u32 len, int fd, u64 offset) {
     u32 taken = 0;
     for (const auto& [name, addr] : img.exports) {
       auto it = mine.find(name);
-      if (pl ? name.compare(0, pl, lib->prefix) != 0 : it == mine.end()) continue;
+      if (it == mine.end() && (!pl || name.compare(0, pl, lib->prefix) != 0)) continue;
       const u32 where = addr + img.slide;
       if (where < at || where + 4 > at + len) continue;
+      // The private mode record layout below is known only for this build.
+      if (name == "VFBSelectMode" &&
+          (!known_ppc_1056 || addr != 0xF5618 || mem_.r32(where) != 0x7C0802A6)) continue;
       const u32 index = hook_for(name, it != mine.end() ? it->second : nullptr);
       if (keep.count(name)) {
         const u32 kept = keep_original(where);
@@ -432,9 +461,31 @@ void display_updated(GuestCall& c) {
   c.process.publish_display();
   c.ret(r);
 }
-const HookSpec kDisplay[] = {{"CGXUpdateDisplay", display_updated, true}};
+void display_mode_selected(GuestCall& c) {
+  u32 w[8];
+  for (u32& v : w) v = c.i();
+  const u32 r = c.call(c.original(), {w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]});
+  bool found = false;
+  if (!r && w[0] <= UINT32_MAX - 160 && c.mem.range_ok(w[0] + 160, 4)) {
+    const u32 obj = c.mem.r32(w[0] + 160);
+    if (obj <= UINT32_MAX - 448 && c.mem.range_ok(obj + 448, 4) && w[1] < 16) {
+      const u32 table = c.mem.r32(obj + 448);
+      const u64 desc64 = (u64)table + 200 * w[1];
+      if (desc64 <= UINT32_MAX && c.mem.range_ok((u32)desc64, 28)) {
+        const u32 desc = (u32)desc64;
+        c.process.set_display_format(c.mem.r32(desc + 8), c.mem.r32(desc + 12),
+                                     c.mem.r32(desc + 20), c.mem.r32(desc + 24));
+        found = true;
+      }
+    }
+  }
+  if (!r && !found) log_warn("cannot read the virtual display's selected mode");
+  c.ret(r);
+}
+const HookSpec kDisplay[] = {{"CGXUpdateDisplay", display_updated, true},
+                             {"VFBSelectMode", display_mode_selected, true}};
 const HookLibrary kDisplayLibraries[] = {
-    {"/CoreGraphics.framework/Versions/A/CoreGraphics", "", kDisplay, 1, true},
+    {"/CoreGraphics.framework/Versions/A/CoreGraphics", "", kDisplay, 2, true},
 };
 }  // namespace
 const HookLibrary* display_hook_libraries(size_t& n) {
@@ -522,7 +573,8 @@ u32 Process::call_guest_args(Thread& t, u32 fn, const std::vector<GuestArg>& arg
   PPCState& s = t.ppc;
   // A fresh frame well below the caller's, past the 224 bytes below the
   // stack pointer that a PowerPC function may use without moving it.
-  const u32 sp = (saved.gpr[1] - 1024) & ~15u;
+  const u32 extra = args.size() > 8 ? (u32)(args.size() - 8) * 4 : 0;
+  const u32 sp = (saved.gpr[1] - 1024 - extra) & ~15u;
   mem_.w32(sp, saved.gpr[1]);
   s.gpr[1] = sp;
   // Integers in r3 to r10; floats in f1 to f13, each still using up an
@@ -533,10 +585,11 @@ u32 Process::call_guest_args(Thread& t, u32 fn, const std::vector<GuestArg>& arg
       float v;
       memcpy(&v, &a.bits, 4);
       if (f < 13) s.fpr[1 + f++].d = v;
-      k++;
     } else if (k < 8) {
-      s.gpr[3 + k++] = a.bits;
+      s.gpr[3 + k] = a.bits;
     }
+    if (k >= 8) mem_.w32(sp + 24 + 4 * (u32)k, a.bits);
+    k++;
   }
   s.lr = kPPCGuestReturnAddr;
   s.pc = fn & ~3u;

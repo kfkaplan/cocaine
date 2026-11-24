@@ -2,23 +2,48 @@
 
 Moved from the README on 2026-11-18. What doesn't work yet, or works only partly, and why. The README keeps a short list of the ones a user would notice.
 
+- PowerPC PEF/CFM launch is experimental. EV Nova 1.0.0 loads and passes
+  monitor initialization on 10.5.6, but stops at "Error initializing
+  Registration Tool!" even when Finder metadata writes succeed; its cause
+  remains unknown. Do not bypass the game's registration.
+- Ghost Recon Demo's extensionless app bundle is recognized and loads via
+  LaunchCFMApp. With volume metadata fixed it gets past its installation
+  check and reaches its menu using the AGL and GLU hooks. The launcher
+  starts it at 800x600 to avoid cropping; at the default display size the
+  menu is cropped after the game switches modes:
+  it uses a 640x480 GL viewport with a 400x300 QuickDraw drawable. The user
+  confirmed that gameplay displays after the larger mode switch was fixed.
+- AppleDouble resource forks are exposed read-only from temporary files when
+  native metadata is missing. Their file descriptors do not retain the
+  original fork's path, and writable sidecar forks are not supported.
+- Virtual display mode switching is tracked only for the checked 10.5.6
+  PowerPC CoreGraphics implementation. 8-bit modes and modes exceeding the
+  window server's shared framebuffer are not supported.
+- The viewer follows the guest display, not an individual game's window.
+  Ghost Recon Demo's AGL drawable has no associated Carbon window, so it
+  must fall back to the display mode rather than a window's bounds.
+
 - Some Mach port rights are never released: rights that arrive with
   requests from other processes, IOKit's registry and iterator ports, and
   the ports of threads that have ended. That only adds up over hours of
   heavy system traffic.
 
 - OpenGL and OpenAL pass through for both CPUs, but only the
-  functions Marble Blast uses: much of OpenGL 1.x, AGL's context calls and
-  OpenAL 1.1's playback calls. Another game will want others, which
+  functions used by the games tested so far: much of OpenGL 1.x, some AGL,
+  CGL and GLU calls, and OpenAL 1.1's playback calls. Another game will want others, which
   announce themselves on the first call ("... is not passed through to the
-  Mac yet"). Full screen (`aglSetFullScreen`) isn't done, so games have to
+  Mac yet"). AGL and CGL pixel-format requests are logged but not enforced: the
+  existing fixed accelerated format is used instead. CGL fullscreen draws
+  into the captured guest display (Postal 2's animated intro and menu render).
+  AGL fullscreen (`aglSetFullScreen`) isn't done, so AGL games have to
   be set to play in a window. DrawSprocket still runs as guest code and
   does nothing useful.
 - Sound comes out of one stereo 44.1 kHz device, with no input. The guest's
   Component Manager finds no components at all under cocaine (why is not
   known yet); the output units are supplied instead, but other components
   (Sound Manager's, QuickTime's codecs) still can't be found.
-- Games are held to 60 frames a second (`COCAINE_GL_FPS`); past that, each
+- OpenGL games are held to 120 frames a second by default (`COCAINE_GL_FPS`). Past
+  the screen's refresh, each
   frame only costs power, twice, since the guest's window server composites
   each one. Even so, a game's window in 2x mode is enlarged by the emulated
   window server every frame, which is most of what it costs while playing
@@ -26,7 +51,12 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   Blast's 800 x 600).
 - Leopard's 2x drawing was never finished: Carbon programs that don't ask
   for it, Marble Blast among them, are drawn at 1x and enlarged, which looks
-  as it did before, only bigger.
+  as it did before, only bigger. Dynamically linked SDL 1.2 games default to
+  1x too: their QuickDraw driver mixes point and pixel coordinates at 2x,
+  which can leave software windows blank. Forcing COCAINE_UI_SCALE=2 can
+  bring this back; the default fixes Postal 2's startup warning. Postal 2
+  uses a smaller 1024x768 guest display and doubles pixels in the viewer
+  instead, enlarging the menu without enabling that broken drawing mode.
 - A default button's blue pulse stutters at the usual 2560 x 1600: measured
   on 2026-11-20 in VLC's Open Source dialog (PowerPC), the button gets a
   new picture about twice a second, in step with the text cursor's blink,
@@ -48,7 +78,10 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
 - IOKit has almost no devices: most searches come back empty. There is a
   power-management root that never announces sleep or wake, and an input
   system with one mouse and one keyboard's worth of events, fed from the
-  viewer. No display device: the window server makes do with a virtual one.
+  viewer. Mounted disk images and optical media have only the minimal CD
+  registry entries needed for detection; raw disc commands, eject and media
+  notifications are not emulated. No display device: the window server makes
+  do with a virtual one.
 - The guest's display is one fixed window holding everything (2560 x 1600 unless
   `COCAINE_DISPLAY` says otherwise),
   with no pointer of its own drawn on it. Nobody is logged in to the guest

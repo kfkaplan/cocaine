@@ -299,7 +299,7 @@ void Process::host_call(Thread& t, u32 id) {
         X86State& s = t.x86;
         u8* dst = mem_.host(s.reg[X86State::EDI]);
         const u32 n = s.reg[X86State::EDX];
-        for (u32 i = 0; i < n; i++) dst[i] = s.xmm[0].b[i & 15];
+        memset_pattern16(dst, s.xmm[0].b, n);
       }
       break;
     case kGettimeofday: {  // fills the timeval and returns 0 for "done"

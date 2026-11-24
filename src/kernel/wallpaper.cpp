@@ -49,10 +49,9 @@ void Process::draw_wallpaper(Thread& t) {
     char full[PATH_MAX];
     path = realpath(e, full) ? full : e;
   } else {
-    std::string dir = opt_.self_path;  // .../build/cocaine
-    for (int up = 0; up < 2 && dir.rfind('/') != std::string::npos; up++) dir.erase(dir.rfind('/'));
-    const std::string ours = dir + "/images/linen.jpeg";
-    path = access(ours.c_str(), R_OK) == 0 ? ours : "/System/Library/CoreServices/DefaultDesktop.jpg";
+    path = access(bundled_wallpaper_path().c_str(), R_OK) == 0
+               ? "/.cocaine/linen.jpeg"
+               : "/System/Library/CoreServices/DefaultDesktop.jpg";
   }
 
   auto fn = [&](const char* name) { return guest_symbol(name); };

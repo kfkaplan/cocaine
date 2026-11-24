@@ -90,7 +90,11 @@ struct KPort {
   Thread* thread = nullptr;  // for Thread ports
   u32 io = 0;                // for IOObject ports: which kind (iokit.cpp)
   u32 item = 0;              // for an IOKit iterator: the kind of object still to hand out
+  u32 initial_item = 0;      // the object to restore when an iterator is reset
 };
+
+// Browsable host volumes mounted under /Volumes, or an errno on failure.
+int mounted_volumes(std::vector<struct statfs>& volumes, int flags);
 
 // A message taken off a port and turned into what the guest will see, along
 // with what the kernel says about its sender.
@@ -150,6 +154,7 @@ class Process {
   // The window server has just put an update on the screen: copy what
   // changed to the viewer (mach.cpp). Nothing in other processes.
   void publish_display();
+  void set_display_format(u32 width, u32 height, u32 stride, u32 bits);
 
  private:
   // ---- process.cpp ----
@@ -183,6 +188,8 @@ class Process {
   SysRet sys_getdirentries(int fd, u32 buf, u32 nbytes, u32 basep, bool wide);
   SysRet sys_statfs(const struct statfs& fs, u32 buf, bool wide);
   SysRet sys_getattrlist(const std::string& path, u32 list, u32 buf, u32 size, u32 options);
+  SysRet sys_setattrlist(const std::string& path, u32 list, u32 buf, u32 size, u32 options);
+  int open_appledouble_fork(const std::string& host, int flags);
   SysRet sys_socket_call(u32 num, SysArgs& a);
   void write_stat(u32 buf, const struct stat& st, bool wide);
   u32 machdep_call(Thread& t, u32 num, SysArgs& a);
@@ -192,6 +199,7 @@ class Process {
   // Where a path the guest names lives on the host. System directories are
   // redirected into the system root.
   std::string host_path(const std::string& guest_path, bool follow_last = true) const;
+  std::string bundled_wallpaper_path() const;
   // The reverse, for calls that hand a path back to the guest.
   std::string guest_path(const std::string& host_path) const;
 
@@ -234,10 +242,12 @@ class Process {
   // Maps the memory behind a memory-entry port into the guest. Returns a
   // Mach result, and the address in `at`.
   // Starts copying the guest window server's display out for the viewer.
-  void share_display(u32 addr);
+  void share_display(u32 addr, u64 bytes);
   bool display_shared_ = false;
   u8* display_file_ = nullptr;  // the shared file the viewer reads: header, then pixels
+  u64 display_source_bytes_ = 0, display_file_pixels_ = 0;
   u32 display_w_ = 0, display_h_ = 0;
+  u32 display_stride_ = 0, display_bits_ = 32;
   std::mutex publish_mu_;
   std::atomic<u64> hook_published_ns_{0};  // when publish_display last ran
   bool publish_changed();  // with publish_mu_ held
@@ -333,6 +343,7 @@ class Process {
   // when the pointer moves by the mouse's own movement from there rather than
   // following the Mac's pointer (uptime in nanoseconds). See set_pointer.
   u64 hid_last_warp_ = 0, hid_relative_until_ = 0;
+  bool hid_viewer_captured_ = false;
   u32 hid_buttons_ = 0;        // the mouse buttons held, the left one in bit 0
   // For working on cocaine: until this time, every message this process
   // sends is noted, to see what the window server does with an input event.
@@ -367,6 +378,8 @@ class Process {
 
   std::vector<std::string> argv_, envp_;
   std::string exe_path_;
+  mutable std::mutex proc_name_mu_;
+  std::string proc_name_;
   bool is_login_window_ = false;  // this program is the system's loginwindow, yet to say the session is ready
   bool has_windows_ = false;      // an application, by the look of it: it will want the window server
 

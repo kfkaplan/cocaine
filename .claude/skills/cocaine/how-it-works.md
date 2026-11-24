@@ -74,6 +74,16 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   Apple's own old libraries, from a Mac OS X install you supply, as guest
   code. Guest paths under `/System`, `/usr`, `/Library` and friends are
   redirected into that system root; everything else is this Mac's own files.
+  PowerPC PEF executables are passed to Leopard's `LaunchCFMApp`. Imported
+  AppleDouble sidecars supply missing Finder metadata and read-only resource
+  forks without changing the imported files. Parent IDs for immediate system
+  root children use the guest volume root ID so Carbon can build paths.
+  Volume enumeration uses the imported root's backing volume, including its
+  actual read-only status, and adds browsable host mounts under `/Volumes`.
+  Carbon's `/.vol/<device>/@` and root folder ID 2 resolve those mounts.
+  IOKit identifies mounted disk images and optical media by BSD device name
+  and presents a minimal CD media ancestor with the `Whole` property, for
+  installers that check for a disc. This does not emulate disc commands.
 - **Fake kernel.** `src/kernel` stands in for what sits underneath those
   libraries:
   - BSD system calls. The host is Darwin too, so most map onto the same host
@@ -110,7 +120,7 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   message arrives for it. Only daemons known to work are on call (`notifyd`,
   `DirectoryService`, `dirhelper`, `securityd`, `coreservicesd`, `configd`
   (without its plug-ins, `-b`, and in the foreground, `-d`), and
-  `WindowServer`, `ATSServer` and `loginwindow`, the last three for Intel
+  `WindowServer`, `ATSServer`, `loginwindow` and `hidd`, the last four for Intel
   programs only where the keys to them have been supplied). Each starts in
   the guest's `/`, as launchd starts daemons;
   `COCAINE_DAEMONS=all`, or a
@@ -127,6 +137,8 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   draws one itself from inside loginwindow once the session is ready: a
   desktop-level window that ignores the mouse, with `COCAINE_WALLPAPER` (or
   `images/linen.jpeg`) drawn to fill it (`src/kernel/wallpaper.cpp`). The
+  bundled image is exposed at `/.cocaine/linen.jpeg` so it remains accessible
+  even when the checkout is under the host's private Library folder. The
   Apple menu's logo is swapped for a pile of powder in a copy of CoreUI's art
   file that guests are shown instead of Apple's (`src/session/art.cpp`).
   Closing the viewer window ends the whole run. SKILL.md has the details.
@@ -140,15 +152,33 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   program's service lookups until the login window has put itself in front,
   which that process's cocaine reports. Any other session leaves the window
   server alone until something asks for it. The window server draws into a
-  "VirtualDisplay" of its own making; its cocaine copies whatever changes
-  there into a small shared file, checking 120 times a second, and starts
+  "VirtualDisplay" of its own making; checked CoreGraphics patches for the
+  original release and 10.5.6 set its size. Its cocaine copies whatever changes
+  there into a small shared file, checking up to 250 times a second, and starts
   `cocaine --view` on it. cocaine hooks the window server's own
   `CGXUpdateDisplay` (a private CoreGraphics function, on both CPUs): when
   it returns, the screen holds a whole picture, and what changed is copied
   to the viewer then, on the window server's thread, before the next update
   can start, so a window halfway through being redrawn is never shown torn.
-  (A polling copier remains for a window server where the hook isn't
-  working, and stands down once the hook has published.) The file's frame
+  On the checked 10.5.6 PowerPC CoreGraphics, a second hook tracks virtual
+  display mode changes, including dimensions and row stride; RGB555 pixels
+  are expanded to the viewer's 32-bit format. The shared file holds the
+  current dimensions with its frame sequence, and has room for modes that
+  fit the window server's shared framebuffer, including 16-bit modes expanded
+  to 32 bits. When the dimensions change, the viewer resizes its window to
+  two physical screen pixels per guest pixel by default, or one with
+  `COCAINE_VIEWER_DOUBLE=0`, fitting it to the current screen if necessary.
+  It updates its aspect ratio and input mapping too.
+  The launcher starts Ghost Recon Demo with an 800x600 display, unless an
+  explicit `COCAINE_DISPLAY` is inherited: at the default size its drawable
+  is too small for its viewport after it switches display modes. It also
+  sets `COCAINE_VIEWER_DOUBLE=1` unless inherited, to show each guest pixel
+  twice as wide and high where the screen has room.
+  A polling copier stands down while the hook is active and resumes if it
+  stops reporting updates: some games change the display without calling
+  `CGXUpdateDisplay`. Those fallback copies can show a partially drawn frame.
+  Scripted screenshots read the published file without forcing a refresh,
+  so they test what the viewer can actually see. The file's frame
   number is odd while a picture is being written, so the viewer never takes
   a half-written one. The viewer is a plain macOS window that hands each new picture
   to its layer, so this Mac's graphics hardware does the scaling
@@ -159,23 +189,27 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   window server preferences, which is the difference between a button
   taking 145 ms to react and 15. Mouse and keys are written into the input system's
   shared event queue (`post_input_event` in `src/kernel/iokit.cpp`), where
-  the window server finds them as it would on real hardware, and it decides
+  the window server finds them as it would on real hardware. Its wake-up
+  notification is nonblocking: a full notification port already holds a
+  wake-up, so it must not stall later input. The window server decides
   which app gets what. The viewer sends the Mac's own measure of each
-  movement with it, in points (one to a pixel on a Mac of 2007), and that
-  is the movement the guest is told of, so a game turning its camera by the
-  mouse turns it as much as it did on a real Mac, not twice that at the
-  usual 2x display. When the window server moves the pointer itself
+  movement with it, scaled to the current guest display and viewer size.
+  When a game captures the pointer for camera controls, its movement instead
+  stays in host points, so resizing the viewer does not change camera
+  sensitivity. When the window server moves the pointer itself
   (`IOHIDSetMouseLocation`, input method 4: two 16-bit numbers and a
   process id), the pointer stays there and, for a second and a half,
   moves by the mouse's movement from there instead of following the Mac's
   pointer, as on real hardware; a program doing that again and again (a
   game that recentres a hidden pointer) has the viewer hide the Mac's
   pointer and hold it still (`pointer_held` in the display file).
+  Command-Option-M also toggles capture manually; the viewer tells the input
+  system when capture changes, and releases it when the window loses focus.
 - **Games: OpenGL and OpenAL.** Leopard's OpenGL drives graphics cards no
   Apple Silicon Mac has, and run as guest code it finds no renderer at all:
   every call quietly does nothing (Marble Blast crashed several calls
   later, on a camera matrix OpenGL never filled in). So when a guest maps
-  the code of libGL, AGL or an OpenAL framework (its own bundled copy
+  the code of libGL, libGLU, AGL, the CGL framework or an OpenAL framework (its own bundled copy
   counts), cocaine reads the library's exported symbols and writes a host
   call over the first instruction of each function it supplies
   (`src/kernel/hooks.cpp`). Whoever calls it, the game or another library,
@@ -197,12 +231,54 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   for the end of the track. Pixel
   data needs no copy, because the host's swap-bytes pixel setting is kept
   the opposite of the guest's. Vertex arrays are noted when the guest
-  points at them and converted at each draw. Each guest OpenGL context
-  draws into an offscreen framebuffer on the Mac's GPU. At
+  points at them and converted at each draw. Packed PowerPC arrays are
+  byte-swapped in vector-sized blocks; strided arrays are copied and
+  swapped component by component, while Intel arrays need no swap.
+  Each guest OpenGL context
+  draws into an offscreen framebuffer on the Mac's GPU. AGL renderer
+  queries describe the host's renderers for the virtual main display;
+  pixel formats hold host CGL formats, though requested attributes are not
+  yet enforced. At
   `aglSwapBuffers` cocaine reads the frame back and copies it into the
-  game window's own pixels, then marks the window changed and has the
+  game window's own pixels, converting to RGB555 for a 16-bit QuickDraw
+  pixmap, then marks the window changed and has the
   guest's QuickDraw flush it, the way a game that drew in software did. The
-  window server, the viewer and window moves then need nothing new. Those
+  window server, the viewer and window moves then need nothing new. Cocoa's
+  NSOpenGLView uses CGL instead: cocaine takes over CGL context creation,
+  connects the offscreen framebuffer to the window server's surface bounds,
+  and at `CGLFlushDrawable` draws the read-back pixels into the guest window
+  through its CoreGraphics window context. GL Golf uses this path and GLU's
+  quadrics, mipmaps, and perspective functions. CGL fullscreen contexts use
+  the captured guest display's dimensions and borrowed
+  `CGDisplayGetDrawingContext` instead, drawing the same read-back image at
+  the display's origin. Clearing or replacing the drawable leaves fullscreen;
+  no host display is captured or switched. Postal 2 uses this path, together
+  with scissor clipping, color material and range-indexed drawing (which
+  shares the ordinary indexed draw's guest-array conversion).
+  ARB texture compression and S3TC are offered when the host supports them.
+  Compressed uploads, updates and readback use the core and ARB entry points;
+  their blocks have a fixed byte layout and are not swapped for PowerPC.
+  Without S3TC, Postal 2's renderer skips the highest mip of compressed
+  textures even for fonts: its 256x256 DXT5 font atlases became 128x128.
+  Passing compression through preserves their full source resolution.
+  AGL and CGL presentation is capped at 120 frames a second by default to
+  reduce latency for app-drawn cursors; `COCAINE_GL_FPS` overrides it,
+  including `60` for the former limit and `0` for no limit.
+  Before starting guest code, programs linked to SDL 1.2 get a default
+  `COCAINE_UI_SCALE=1`. SDL's old QuickDraw driver locates its software
+  pixels by subtracting a view's point frame from its window's pixel frame.
+  At 2x that puts Postal 2's warning bitmap 385 rows into the backing store,
+  while its flush covers the first 384 rows: a blank part of the window.
+  Keeping these programs at 1x makes the coordinates agree, without changing
+  other programs' usual scaling. Postal 2 defaults to a 1024x768 guest display
+  and doubled viewer pixels instead of Leopard's unfinished 2x drawing:
+  its menu is larger without breaking the software warning screen. This
+  applies to both bundle and executable launches, including the launcher.
+  The viewer uses nearest-neighbor magnification when doubling, so it does
+  not blend neighboring pixels. Explicit `COCAINE_UI_SCALE`,
+  `COCAINE_DISPLAY` and `COCAINE_VIEWER_DOUBLE` still take precedence.
+  CGL pixel format requests,
+  like AGL's, are not yet enforced. Those
   QuickDraw calls are guest functions, run from native code
   (`Process::call_guest`): a fresh stack frame, a return address that
   holds a "come back" host call, and the CPU loop run until it hits it.
@@ -225,7 +301,13 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   times the guest is told are what matters most: a sample's host time is
   when it will really be heard, measured on the guest's clock (which ticks
   in nanoseconds), from an anchor moved every turn. Get that wrong and VLC,
-  thinking every buffer late, plays silence.
+  thinking every buffer late, plays silence. Leopard's AudioFile reader
+  rejects MIDI files used by NSSound (for example GL Golf's music). When it
+  rejects a callback-backed MIDI file, `src/audio/midi.cpp` reads the
+  sequence with the Mac's MusicSequence, renders it on demand through the
+  Mac's DLS synthesizer, and gives the guest a seekable PCM WAVE through
+  AudioFile callbacks. NSSound still controls playback and looping; other
+  file types stay with Leopard's AudioFile reader.
 - **Calling on, and passing on.** Taking over works on Intel guests too:
   the host call is `int 0xFE` and its number, arguments come off the stack,
   and the function returns by popping its return address. A function taken

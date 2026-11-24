@@ -45,6 +45,7 @@ add_executable(cocaine
   src/gl/gl.cpp
   src/al/al.cpp
   src/audio/coreaudio.cpp
+  src/audio/midi.cpp
 )
 
 target_include_directories(cocaine PRIVATE src)
@@ -64,9 +65,30 @@ set_source_files_properties(
   PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-frounding-math")
 
 set_source_files_properties(src/viewer/viewer.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-target_link_libraries(cocaine PRIVATE "-framework CoreFoundation" "-framework Cocoa" "-framework QuartzCore" "-framework CoreGraphics" "-framework ImageIO" "-framework OpenGL" "-framework OpenAL" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio")
+target_link_libraries(cocaine PRIVATE "-framework CoreFoundation" "-framework IOKit" "-framework Cocoa" "-framework QuartzCore" "-framework CoreGraphics" "-framework ImageIO" "-framework OpenGL" "-framework OpenAL" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio")
 
 enable_testing()
+add_executable(guest-memory-test tests/guest-memory.cpp src/mem/guest_memory.cpp)
+target_include_directories(guest-memory-test PRIVATE src)
+add_test(NAME guest-memory COMMAND guest-memory-test)
+add_executable(display-pixels-test tests/display-pixels.cpp)
+target_include_directories(display-pixels-test PRIVATE src)
+add_test(NAME display-pixels COMMAND display-pixels-test)
+add_executable(ui-scale-test tests/ui-scale.cpp)
+target_include_directories(ui-scale-test PRIVATE src)
+add_test(NAME ui-scale COMMAND ui-scale-test)
+add_executable(input-notify-test tests/input-notify.cpp)
+target_include_directories(input-notify-test PRIVATE src)
+add_test(NAME input-notify COMMAND input-notify-test)
+add_executable(vertex-copy-test tests/vertex-copy.cpp)
+target_include_directories(vertex-copy-test PRIVATE src)
+add_test(NAME vertex-copy COMMAND vertex-copy-test)
+add_executable(viewer-resize-test tests/viewer-resize.mm)
+target_include_directories(viewer-resize-test PRIVATE src)
+set_source_files_properties(tests/viewer-resize.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+target_link_libraries(viewer-resize-test PRIVATE "-framework Cocoa" "-framework QuartzCore" "-framework CoreGraphics")
+add_test(NAME viewer-resize COMMAND viewer-resize-test)
+set_tests_properties(viewer-resize PROPERTIES SKIP_RETURN_CODE 77)
 # The ARM64 instruction encodings the PowerPC translator emits, against the
 # system's assembler.
 add_test(NAME arm64-encodings

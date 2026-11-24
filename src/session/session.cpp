@@ -112,6 +112,7 @@ const char* const kWindowDaemons[] = {
     "com.apple.WindowServer",  // draws every window, hands out mouse and keys
     "com.apple.ATSServer",     // fonts
     "com.apple.loginwindow",   // sets a login session up
+    "com.apple.hidd",          // HID event service needed by later Leopard releases
 };
 
 // Services that no job description lists because the daemon publishes them
