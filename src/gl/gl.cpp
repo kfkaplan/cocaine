@@ -370,6 +370,15 @@ void present(GuestCall& c, Context* x) {
 
 // ---- AGL ------------------------------------------------------------------------
 
+void aglGetVersion(GuestCall& c) {
+  const u32 major = c.i(), minor = c.i();
+  if (!c.original()) {
+    log_warn("OpenGL: the guest's aglGetVersion is unavailable");
+    return;
+  }
+  c.call(c.original(), {major, minor});
+}
+
 u32 choose_pixel_format(GuestCall& c, u32 attribs, const char* api) {
   g_big = c.powerpc;
   std::string list;
@@ -2072,6 +2081,7 @@ const HookSpec kGL[] = {
 #undef H
 
 const HookSpec kAGL[] = {
+    {"aglGetVersion", aglGetVersion, true},
     {"aglChoosePixelFormat", aglChoosePixelFormat},
     {"aglChoosePixelFormatCFM", aglChoosePixelFormat},
     {"aglQueryRendererInfo", aglQueryRendererInfo},

@@ -6,6 +6,8 @@ glu = ctypes.CDLL("/System/Library/Frameworks/OpenGL.framework/Versions/A/Librar
 uint = ctypes.c_uint
 intp = ctypes.POINTER(ctypes.c_int)
 
+agl.aglGetVersion.argtypes = [intp, intp]
+agl.aglGetVersion.restype = None
 agl.aglQueryRendererInfoCFM.argtypes = [ctypes.c_void_p, ctypes.c_int]
 agl.aglQueryRendererInfoCFM.restype = uint
 agl.aglNextRendererInfo.argtypes = [uint]
@@ -25,6 +27,14 @@ agl.aglDestroyContext.argtypes = [uint]
 gl.glMatrixMode.argtypes = [uint]
 gl.glGetDoublev.argtypes = [uint, ctypes.POINTER(ctypes.c_double)]
 glu.gluOrtho2D.argtypes = [ctypes.c_double] * 4
+
+major, minor = ctypes.c_int(-1), ctypes.c_int(-1)
+agl.aglGetVersion(ctypes.byref(major), ctypes.byref(minor))
+assert (major.value, minor.value) == (2, 0)
+major.value, minor.value = -1, -1
+agl.aglGetVersion(ctypes.byref(major), None)
+agl.aglGetVersion(None, ctypes.byref(minor))
+assert (major.value, minor.value) == (2, 0)
 
 assert not agl.aglQueryRendererInfoCFM(1, 1)
 assert agl.aglGetError() == 10006

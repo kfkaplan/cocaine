@@ -287,7 +287,9 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   draws into an offscreen framebuffer on the Mac's GPU. AGL renderer
   queries describe the host's renderers for the virtual main display;
   pixel formats hold host CGL formats, though requested attributes are not
-  yet enforced. At
+  yet enforced. `aglGetVersion` calls the guest's own implementation so
+  applications see the AGL library's version rather than an unfilled answer.
+  At
   `aglSwapBuffers` cocaine reads the frame back and copies it into the
   game window's own pixels, converting to RGB555 for a 16-bit QuickDraw
   pixmap, then marks the window changed and has the
