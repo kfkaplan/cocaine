@@ -472,12 +472,29 @@ void Process::set_display_format(u32 width, u32 height, u32 stride, u32 bits) {
   u32 w, h;
   guest_display_size(w, h);
   std::lock_guard<std::mutex> lk(publish_mu_);
-  if (width != w || height != h || (bits != 16 && bits != 32) ||
-      stride < (u64)width * (bits / 8) || (u64)stride * height > UINT32_MAX) {
+  // CoreGraphics selects a 1x1 placeholder before the real display exists.
+  if (width == 1 && height == 1 && !display_file_) return;
+  const u64 pixels = (u64)width * height * 4;
+  const u64 source_bytes = (u64)stride * height;
+  if (!width || !height || width > 4096 || height > 4096 || (bits != 16 && bits != 32) ||
+      stride < (u64)width * (bits / 8) || source_bytes > UINT32_MAX ||
+      (display_file_ ? pixels > display_file_pixels_ || source_bytes > display_source_bytes_
+                     : pixels > (u64)w * h * 4)) {
     log_warn("unsupported virtual display format: %ux%u, %u bits, %u bytes per row", width, height, bits, stride);
     display_bits_ = 0;
     return;
   }
+  if (display_file_ && (width != display_w_ || height != display_h_)) {
+    auto* head = (DisplayFileHeader*)display_file_;
+    __atomic_add_fetch(&head->frame, 1, __ATOMIC_ACQ_REL);
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    memset(display_file_ + sizeof(DisplayFileHeader), 0, (size_t)width * height * 4);
+    __atomic_store_n(&head->width, width, __ATOMIC_RELAXED);
+    __atomic_store_n(&head->height, height, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&head->frame, 1, __ATOMIC_RELEASE);
+  }
+  display_w_ = width;
+  display_h_ = height;
   display_bits_ = bits;
   display_stride_ = stride;
   publish_changed();
@@ -491,9 +508,8 @@ void Process::publish_display() {
   hook_published_ns_ = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
 }
 
-// The display, as 10.5's window server lays out its virtual one: four bytes
-// a pixel, at the size cocaine has it make (guest_display_size).
-void Process::share_display(u32 addr) {
+// The display, as 10.5's window server lays out its virtual one.
+void Process::share_display(u32 addr, u64 shared_bytes) {
   // The pixels start one 4 KB page into the display's memory. (An earlier
   // guess of 64 bytes more showed everything sixteen pixels to the left of
   // where it was, so clicks landed sixteen pixels off.)
@@ -501,6 +517,18 @@ void Process::share_display(u32 addr) {
   guest_display_size(kWidth, kHeight);
   constexpr u32 kPixelsAt = 4096;
   display_at_ = addr + kPixelsAt;
+  display_source_bytes_ = shared_bytes - kPixelsAt;
+  // A 16-bit guest display expands to four bytes per pixel in the viewer.
+  display_file_pixels_ = std::min(display_source_bytes_ * 2, 4096ull * 4096 * 4);
+  const u32 width = display_w_ ? display_w_ : kWidth;
+  const u32 height = display_h_ ? display_h_ : kHeight;
+  if ((u64)width * height * 4 > display_file_pixels_ ||
+      (display_stride_ && (u64)display_stride_ * height > display_source_bytes_)) {
+    log_warn("the virtual display's initial mode exceeds its shared framebuffer");
+    return;
+  }
+  log_debug("virtual display: %llu source bytes, %llu viewer bytes",
+            (unsigned long long)display_source_bytes_, (unsigned long long)display_file_pixels_);
   char tmp[PATH_MAX] = "/tmp/";
   confstr(_CS_DARWIN_USER_TEMP_DIR, tmp, sizeof tmp);
   const std::string path = std::string(tmp) + "cocaine-display-" + std::to_string(getpid()) + ".raw";
@@ -520,7 +548,7 @@ void Process::share_display(u32 addr) {
     }
     closedir(d);
   }
-  const size_t bytes = sizeof(DisplayFileHeader) + (size_t)kWidth * kHeight * 4;
+  const size_t bytes = sizeof(DisplayFileHeader) + (size_t)display_file_pixels_;
   const int fd = open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0600);
   if (fd < 0) return;
   if (ftruncate(fd, (off_t)bytes) != 0) {
@@ -530,11 +558,11 @@ void Process::share_display(u32 addr) {
   u8* map = (u8*)mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   close(fd);
   if (map == MAP_FAILED) return;
-  const DisplayFileHeader head = {kDisplayFileMagic, kWidth, kHeight, mem_.big_endian() ? 1u : 0u,
+  const DisplayFileHeader head = {kDisplayFileMagic, width, height, mem_.big_endian() ? 1u : 0u,
                                   (u32)getpid(), 0, 0, 0};
   memcpy(map, &head, sizeof head);
-  display_w_ = kWidth;
-  display_h_ = kHeight;
+  display_w_ = width;
+  display_h_ = height;
   display_file_ = map;
 
   // The viewer is this same program, started to show the file.
@@ -589,21 +617,22 @@ void Process::share_display(u32 addr) {
   std::thread([this, addr, map, kWidth, kHeight] {
     // The window server's own updates are published as they finish
     // (publish_display, from a hook on its CGXUpdateDisplay). This copier is
-    // the fallback for a window server where the hook isn't working: a
-    // hundred and twenty times a second it copies what changed. Once the
-    // hook has published, it only checks in now and then.
+    // the fallback when the hook is missing or stops receiving updates.
+    // Some programs update the display without calling CGXUpdateDisplay.
     (void)map;
     const size_t picture = (size_t)kWidth * 4 * kHeight;
     while (mem_.range_ok(addr + kPixelsAt, picture)) {
-      if (hook_published_ns_.load()) {
-        usleep(200000);
+      const u64 last_hook = hook_published_ns_.load();
+      const u64 now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+      if (last_hook && now - last_hook < 200000000ull) {
+        usleep(20000);
         continue;
       }
       {
         std::lock_guard<std::mutex> lk(publish_mu_);
         publish_changed();
       }
-      usleep(8000);
+      usleep(4000);
     }
     log_warn("the display copier stopped: the display's memory went away");
   }).detach();
@@ -1463,7 +1492,7 @@ bool Process::kernel_rpc(Thread& t, u32 name, const KPort& port, u32 msg, u32 si
           if (existing && bytes >= kDisplayBytes && !display_shared_ &&
               exe_path_.size() > 13 && exe_path_.compare(exe_path_.size() - 13, 13, "/WindowServer") == 0) {
             display_shared_ = true;
-            share_display((u32)offset);
+            share_display((u32)offset, bytes);
           }
           static std::atomic<int> made{0};
           if (made++ < 6) {

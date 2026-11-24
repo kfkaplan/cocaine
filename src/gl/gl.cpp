@@ -25,6 +25,7 @@
 
 #define GL_SILENCE_DEPRECATION 1
 
+#include <CoreGraphics/CoreGraphics.h>
 #include <OpenGL/OpenGL.h>
 #include <OpenGL/gl.h>
 #include <OpenGL/glext.h>
@@ -32,11 +33,13 @@
 #include <cmath>
 #include <ctime>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "kernel/display_pixels.h"
 #include "kernel/hooks.h"
 #include "kernel/process.h"
 
@@ -135,8 +138,31 @@ struct Context {
 
 std::mutex g_mu;
 std::unordered_map<u32, Context*> g_contexts;
+std::unordered_map<u32, CGLPixelFormatObj> g_formats;
 u32 g_next_handle = 0x00C0C000;
 thread_local Context* t_current = nullptr;
+thread_local CGLError t_agl_error = kCGLNoError;
+
+struct RendererQuery {
+  CGLRendererInfoObj info = nullptr;
+  std::vector<u32> handles;
+  ~RendererQuery() {
+    if (info) {
+      const CGLError error = CGLDestroyRendererInfo(info);
+      if (error != kCGLNoError) log_warn("OpenGL: cannot release renderer information (%d)", (int)error);
+    }
+  }
+};
+struct RendererEntry {
+  std::shared_ptr<RendererQuery> query;
+  GLint index;
+};
+std::unordered_map<u32, RendererEntry> g_renderers;
+
+void agl_error(CGLError error, const char* operation) {
+  t_agl_error = error;
+  if (error != kCGLNoError) log_warn("OpenGL: %s failed (%d)", operation, (int)error);
+}
 
 std::vector<std::string> g_said;
 void say_once(const std::string& what) {
@@ -213,20 +239,21 @@ void present(GuestCall& c, Context* x) {
   glReadBuffer((GLenum)read);
   glPopClientAttrib();
 
-  static u32 lock, unlock, pixmap, base, rowbytes, pixbounds, flush, dirty, rect, whole;
+  static u32 lock, unlock, pixmap, base, rowbytes, pixdepth, pixbounds, flush, dirty, rect, whole;
   if (!lock) {
     lock = c.symbol("LockPortBits");
     unlock = c.symbol("UnlockPortBits");
     pixmap = c.symbol("GetPortPixMap");
     base = c.symbol("GetPixBaseAddr");
     rowbytes = c.symbol("GetPixRowBytes");
+    pixdepth = c.symbol("GetPixDepth");
     pixbounds = c.symbol("GetPixBounds");
     flush = c.symbol("QDFlushPortBuffer");
     dirty = c.symbol("QDAddRectToDirtyRegion");
     rect = c.scratch(16);
     whole = c.scratch(16);
   }
-  if (!lock || !pixmap || !base || !rowbytes || !flush) {
+  if (!lock || !unlock || !pixmap || !base || !rowbytes || !pixdepth || !flush) {
     say_once("OpenGL: can't find QuickDraw's port functions, so nothing is shown");
     return;
   }
@@ -234,6 +261,7 @@ void present(GuestCall& c, Context* x) {
   const u32 pm = c.call(pixmap, {x->port});
   const u32 pixels = c.call(base, {pm});
   const u32 stride = c.call(rowbytes, {pm}) & 0x3FFF;
+  const u32 depth = c.call(pixdepth, {pm});
   int left = 0, top = 0, pw = 0, ph = 0;
   if (pixbounds && rect) {
     c.call(pixbounds, {pm, rect});
@@ -253,18 +281,32 @@ void present(GuestCall& c, Context* x) {
     cleft = (s16)rd16(r + 2);
   }
   const int dy = ctop - top, dx = cleft - left;
-  if (pixels && stride >= 4 && dx >= 0 && dy >= 0) {
-    const int w = pw > 0 ? std::min(pw - dx, x->width) : x->width;
+  if (depth != 16 && depth != 32) {
+    say_once("OpenGL: unsupported QuickDraw pixel depth " + std::to_string(depth));
+    c.call(unlock, {x->port});
+    return;
+  }
+  const u32 bytes_per_pixel = depth / 8;
+  if (pixels && stride >= bytes_per_pixel && dx >= 0 && dy >= 0) {
+    const int w = std::min(pw > 0 ? std::min(pw - dx, x->width) : x->width,
+                           (int)(stride / bytes_per_pixel) - dx);
     const int h = ph > 0 ? std::min(ph - dy, x->height) : x->height;
-    for (int y = 0; y < h; y++) {
+    for (int y = 0; w > 0 && y < h; y++) {
       const u8* src = x->frame.data() + (size_t)(x->height - 1 - y) * x->width * 4;
-      const u32 at = pixels + (u32)(y + dy) * stride + (u32)dx * 4;
-      memcpy(c.mem.host(at), src, (size_t)std::max(0, std::min<int>(w * 4, (int)stride - dx * 4)));
+      const u64 at = (u64)pixels + (u64)(y + dy) * stride + (u64)dx * bytes_per_pixel;
+      const u64 length = (u64)w * bytes_per_pixel;
+      if (at > UINT32_MAX || !c.mem.range_ok((u32)at, length, GuestMemory::kWrite)) {
+        say_once("OpenGL: QuickDraw pixel buffer is not writable");
+        break;
+      }
+      u8* dst = c.mem.host((u32)at);
+      if (depth == 16) display_to_rgb555(src, dst, (u32)w, c.powerpc);
+      else memcpy(dst, src, (size_t)length);
     }
   }
   top = ctop;
   left = cleft;
-  if (unlock) c.call(unlock, {x->port});
+  c.call(unlock, {x->port});
   // QuickDraw shows only what it knows changed, and it didn't see these
   // pixels change: say the whole window did.
   if (dirty && whole) {
@@ -300,15 +342,33 @@ void aglChoosePixelFormat(GuestCall& c) {
   c.i();
   const u32 attribs = c.i();
   std::string list;
-  for (const u8* p = gp(c, attribs); p && rd32(p) != 0 && list.size() < 200; p += 4) list += " " + std::to_string(rd32(p));
+  if (attribs) {
+    bool ended = false;
+    for (u32 i = 0; i < 128; i++) {
+      const u64 at = (u64)attribs + 4 * i;
+      if (at > UINT32_MAX || !c.mem.range_ok((u32)at, 4, GuestMemory::kRead)) {
+        agl_error(kCGLBadAddress, "reading pixel format attributes");
+        return c.ret(0);
+      }
+      const u32 value = c.mem.r32((u32)at);
+      if (!value) {
+        ended = true;
+        break;
+      }
+      if (list.size() < 200) list += " " + std::to_string(value);
+    }
+    if (!ended) {
+      agl_error(kCGLBadAttribute, "reading pixel format attributes");
+      return c.ret(0);
+    }
+    static std::once_flag warned;
+    std::call_once(warned, [] {
+      log_warn("OpenGL: requested AGL pixel format attributes are not yet enforced");
+    });
+  }
   log_debug("aglChoosePixelFormat:%s", list.c_str());
-  c.ret(0x00C0F000);  // any pixel format the guest asks for, the host's will do
-}
-
-void aglCreateContext(GuestCall& c) {
-  g_big = c.powerpc;
-  c.i();
-  const u32 share = c.i();
+  // Keep the existing offscreen context format; requested AGL attributes are
+  // not yet used to choose it.
   const CGLPixelFormatAttribute attrs[] = {
       kCGLPFAAccelerated, kCGLPFAColorSize, (CGLPixelFormatAttribute)24, kCGLPFAAlphaSize,
       (CGLPixelFormatAttribute)8, kCGLPFADepthSize, (CGLPixelFormatAttribute)24, kCGLPFAStencilSize,
@@ -316,17 +376,187 @@ void aglCreateContext(GuestCall& c) {
       (CGLPixelFormatAttribute)0};
   CGLPixelFormatObj pf = nullptr;
   GLint n = 0;
-  if (CGLChoosePixelFormat(attrs, &pf, &n) != kCGLNoError || !pf) {
-    log_warn("OpenGL: the Mac offered no pixel format");
+  CGLError error = CGLChoosePixelFormat(attrs, &pf, &n);
+  if (error != kCGLNoError || !pf || n <= 0) {
+    if (pf) CGLReleasePixelFormat(pf);
+    agl_error(error != kCGLNoError ? error : kCGLBadPixelFormat, "choosing a pixel format");
     c.ret(0);
     return;
   }
+  std::lock_guard<std::mutex> lk(g_mu);
+  const u32 handle = g_next_handle += 0x10;
+  g_formats[handle] = pf;
+  agl_error(kCGLNoError, "choosing a pixel format");
+  c.ret(handle);
+}
+
+void aglDestroyPixelFormat(GuestCall& c) {
+  const u32 handle = c.i();
+  CGLPixelFormatObj pf = nullptr;
+  {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_formats.find(handle);
+    if (it != g_formats.end()) {
+      pf = it->second;
+      g_formats.erase(it);
+    }
+  }
+  if (!pf) return agl_error(kCGLBadPixelFormat, "destroying a pixel format");
+  CGLReleasePixelFormat(pf);
+  agl_error(kCGLNoError, "destroying a pixel format");
+}
+
+void aglDescribePixelFormat(GuestCall& c) {
+  const u32 handle = c.i(), attr = c.i(), out = c.i();
+  if (!out || !c.mem.range_ok(out, 4, GuestMemory::kWrite)) {
+    agl_error(kCGLBadAddress, "describing a pixel format");
+    return c.ret(0);
+  }
+  std::lock_guard<std::mutex> lk(g_mu);
+  auto it = g_formats.find(handle);
+  if (it == g_formats.end()) {
+    agl_error(kCGLBadPixelFormat, "describing a pixel format");
+    return c.ret(0);
+  }
+  GLint value = 0;
+  CGLError error;
+  switch (attr) {
+    case 4:  // AGL_RGBA
+      value = 1;
+      error = kCGLNoError;
+      break;
+    case 5: case 6: case 7: case 11: case 12: case 13:
+    case 51: case 52: case 53: case 54: case 55: case 56:
+    case 57: case 58: case 59: case 60: case 61: case 70:
+    case 71: case 72: case 73: case 74: case 75: case 76:
+    case 78: case 80: case 81: case 83: case 84: case 90:
+    case 91: case 96:
+      error = CGLDescribePixelFormat(it->second, 0, (CGLPixelFormatAttribute)attr, &value);
+      break;
+    default:
+      error = kCGLBadAttribute;
+      break;
+  }
+  agl_error(error, "describing a pixel format");
+  if (error != kCGLNoError) return c.ret(0);
+  c.mem.w32(out, (u32)value);
+  c.ret(1);
+}
+
+void aglQueryRendererInfo(GuestCall& c) {
+  const u32 devices = c.i();
+  const s32 count = (s32)c.i();
+  if (count < 0 || count > 64 || (devices && !c.mem.range_ok(devices, (u64)count * 4, GuestMemory::kRead))) {
+    agl_error(kCGLBadDisplay, "querying renderers");
+    return c.ret(0);
+  }
+  if (devices && count) {
+    const u32 get_main_device = c.symbol("GetMainDevice");
+    const u32 main_device = get_main_device ? c.call(get_main_device, {}) : 0;
+    if (!main_device) {
+      agl_error(kCGLBadDisplay, "finding the guest display");
+      return c.ret(0);
+    }
+    for (s32 i = 0; i < count; i++) {
+      if (c.mem.r32(devices + (u32)i * 4) != main_device) {
+        agl_error(kCGLBadDisplay, "querying renderers for an unknown display");
+        return c.ret(0);
+      }
+    }
+  }
+  const GLuint mask = CGDisplayIDToOpenGLDisplayMask(CGMainDisplayID());
+  if (!mask) {
+    agl_error(kCGLBadDisplay, "querying renderers");
+    return c.ret(0);
+  }
+  auto query = std::make_shared<RendererQuery>();
+  GLint n = 0;
+  CGLError error = CGLQueryRendererInfo(mask, &query->info, &n);
+  if (error != kCGLNoError || !query->info || n <= 0) {
+    agl_error(error != kCGLNoError ? error : kCGLBadRendererInfo, "querying renderers");
+    return c.ret(0);
+  }
+  std::lock_guard<std::mutex> lk(g_mu);
+  for (GLint i = 0; i < n; i++) {
+    const u32 handle = g_next_handle += 0x10;
+    query->handles.push_back(handle);
+    g_renderers.emplace(handle, RendererEntry{query, i});
+  }
+  agl_error(kCGLNoError, "querying renderers");
+  c.ret(query->handles.front());
+}
+
+void aglNextRendererInfo(GuestCall& c) {
+  const u32 handle = c.i();
+  std::lock_guard<std::mutex> lk(g_mu);
+  auto it = g_renderers.find(handle);
+  if (it == g_renderers.end()) {
+    agl_error(kCGLBadRendererInfo, "finding the next renderer");
+    return c.ret(0);
+  }
+  const auto& entry = it->second;
+  const size_t next = (size_t)entry.index + 1;
+  agl_error(kCGLNoError, "finding the next renderer");
+  c.ret(next < entry.query->handles.size() ? entry.query->handles[next] : 0);
+}
+
+void aglDescribeRenderer(GuestCall& c) {
+  const u32 handle = c.i(), property = c.i(), out = c.i();
+  if (!out || !c.mem.range_ok(out, 4, GuestMemory::kWrite)) {
+    agl_error(kCGLBadAddress, "describing a renderer");
+    return c.ret(0);
+  }
+  std::lock_guard<std::mutex> lk(g_mu);
+  auto it = g_renderers.find(handle);
+  if (it == g_renderers.end()) {
+    agl_error(kCGLBadRendererInfo, "describing a renderer");
+    return c.ret(0);
+  }
+  GLint value = 0;
+  CGLError error = kCGLNoError;
+  if (property != 101 && property != 102) {
+    error = CGLDescribeRenderer(it->second.query->info, it->second.index, (CGLRendererProperty)property, &value);
+  }
+  agl_error(error, "describing a renderer");
+  if (error != kCGLNoError) return c.ret(0);
+  c.mem.w32(out, (u32)value);
+  c.ret(1);
+}
+
+void aglDestroyRendererInfo(GuestCall& c) {
+  const u32 handle = c.i();
+  std::lock_guard<std::mutex> lk(g_mu);
+  auto it = g_renderers.find(handle);
+  if (it == g_renderers.end()) return agl_error(kCGLBadRendererInfo, "destroying renderer information");
+  const auto query = it->second.query;
+  for (u32 h : query->handles) g_renderers.erase(h);
+  agl_error(kCGLNoError, "destroying renderer information");
+}
+
+void aglCreateContext(GuestCall& c) {
+  g_big = c.powerpc;
+  const u32 format = c.i(), share = c.i();
+  CGLPixelFormatObj pf = nullptr;
+  {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto it = g_formats.find(format);
+    if (it != g_formats.end()) pf = CGLRetainPixelFormat(it->second);
+  }
+  if (!pf) {
+    agl_error(kCGLBadPixelFormat, "creating a context");
+    return c.ret(0);
+  }
   Context* shared = share ? context_of(share) : nullptr;
+  if (share && !shared) {
+    CGLReleasePixelFormat(pf);
+    agl_error(kCGLBadMatch, "creating a context");
+    return c.ret(0);
+  }
   auto* x = new Context;
   const CGLError e = CGLCreateContext(pf, shared ? shared->cgl : nullptr, &x->cgl);
   CGLReleasePixelFormat(pf);
   if (e != kCGLNoError) {
-    log_warn("OpenGL: the Mac would not make a context (%d)", (int)e);
+    agl_error(e, "creating a context");
     delete x;
     c.ret(0);
     return;
@@ -334,6 +564,7 @@ void aglCreateContext(GuestCall& c) {
   std::lock_guard<std::mutex> lk(g_mu);
   x->handle = g_next_handle += 0x10;
   g_contexts[x->handle] = x;
+  agl_error(kCGLNoError, "creating a context");
   c.ret(x->handle);
 }
 
@@ -449,22 +680,67 @@ void aglSetFullScreen(GuestCall& c) {
   c.ret(0);
 }
 
+void aglDisable(GuestCall& c) {
+  Context* x = context_of(c.i());
+  const u32 name = c.i();
+  if (!x) {
+    agl_error(kCGLBadContext, "disabling an AGL option");
+    return c.ret(0);
+  }
+  // Buffer rectangles are disabled by default; enabling them is not yet
+  // implemented, so disabling them leaves the full drawable in use.
+  if (name != 202) {
+    agl_error(kCGLBadEnumeration, "disabling an AGL option");
+    return c.ret(0);
+  }
+  agl_error(kCGLNoError, "disabling an AGL option");
+  c.ret(1);
+}
+
 void agl_true(GuestCall& c) { c.ret(1); }
-void agl_zero(GuestCall& c) { c.ret(0); }
+void aglGetError(GuestCall& c) {
+  const CGLError error = t_agl_error;
+  t_agl_error = kCGLNoError;
+  c.ret((u32)error);
+}
 
 void aglErrorString(GuestCall& c) {
-  static u32 s = 0;
-  if (!s) {
-    s = c.scratch(16);
-    if (s) memcpy(c.mem.host(s), "no error", 9);
+  const u32 error = c.i();
+  static std::mutex mu;
+  static std::unordered_map<u32, u32> strings;
+  std::lock_guard<std::mutex> lk(mu);
+  auto found = strings.find(error);
+  if (found != strings.end()) return c.ret(found->second);
+  const char* text = CGLErrorString((CGLError)error);
+  if (!text) {
+    log_warn("OpenGL: no error string for code %u", error);
+    return c.ret(0);
   }
-  c.ret(s);
+  const size_t size = strlen(text) + 1;
+  const u32 at = c.scratch((u32)size);
+  if (!at) {
+    log_warn("OpenGL: cannot allocate error string");
+    return c.ret(0);
+  }
+  memcpy(c.mem.host(at), text, size);
+  strings[error] = at;
+  c.ret(at);
 }
 
 // ---- GL: state ----------------------------------------------------------------
 
 void glEnable_(GuestCall& c) { glEnable(c.i()); }
 void glDisable_(GuestCall& c) { glDisable(c.i()); }
+void glDepthRange_(GuestCall& c) { const double a = c.d(), b = c.d(); glDepthRange(a, b); }
+void glClearDepth_(GuestCall& c) { glClearDepth(c.d()); }
+void glLightModeli_(GuestCall& c) { const u32 p = c.i(); glLightModeli(p, (GLint)c.i()); }
+void glMaterialf_(GuestCall& c) { const u32 a = c.i(), b = c.i(); glMaterialf(a, b, c.f()); }
+void glPointSize_(GuestCall& c) { glPointSize(c.f()); }
+void glShadeModel_(GuestCall& c) { glShadeModel(c.i()); }
+void gluOrtho2D(GuestCall& c) {
+  const double left = c.d(), right = c.d(), bottom = c.d(), top = c.d();
+  glOrtho(left, right, bottom, top, -1.0, 1.0);
+}
 void glIsEnabled_(GuestCall& c) { c.ret(glIsEnabled(c.i())); }
 void glClear_(GuestCall& c) { glClear(c.i()); }
 void glClearColor_(GuestCall& c) {
@@ -517,6 +793,7 @@ void glHint_(GuestCall& c) {
 void glPushAttrib_(GuestCall& c) { glPushAttrib(c.i()); }
 void glPopAttrib_(GuestCall& c) { glPopAttrib(); }
 void glFinish_(GuestCall& c) { glFinish(); }
+void glFlush_(GuestCall& c) { glFlush(); }
 void glGetError_(GuestCall& c) { c.ret(glGetError()); }
 
 // The window's front and back buffers are one offscreen framebuffer here.
@@ -1026,10 +1303,11 @@ void glUnlockArraysEXT_(GuestCall& c) {}
 
 #define H(name) {#name, name##_}
 const HookSpec kGL[] = {
-    H(glEnable), H(glDisable), H(glIsEnabled), H(glClear), H(glClearColor), H(glViewport), H(glBlendFunc),
+    H(glEnable), H(glDisable), H(glDepthRange), H(glClearDepth), H(glLightModeli), H(glMaterialf),
+    H(glPointSize), H(glShadeModel), H(glIsEnabled), H(glClear), H(glClearColor), H(glViewport), H(glBlendFunc),
     H(glAlphaFunc), H(glCullFace), H(glFrontFace), H(glDepthFunc), H(glDepthMask), H(glColorMask),
     H(glStencilFunc), H(glStencilMask), H(glStencilOp), H(glPolygonMode), H(glPolygonOffset), H(glLineWidth),
-    H(glHint), H(glPushAttrib), H(glPopAttrib), H(glFinish), H(glGetError), H(glDrawBuffer), H(glReadBuffer),
+    H(glHint), H(glPushAttrib), H(glPopAttrib), H(glFinish), H(glFlush), H(glGetError), H(glDrawBuffer), H(glReadBuffer),
     H(glPixelStorei), H(glGetIntegerv), H(glGetFloatv), H(glGetDoublev), H(glGetString), H(glMatrixMode),
     H(glLoadIdentity), H(glPushMatrix), H(glPopMatrix), H(glLoadMatrixf), H(glMultMatrixf), H(glTranslatef),
     H(glScalef), H(glRotatef), H(glOrtho), H(glFrustum), H(glClipPlane), H(glBegin), H(glEnd), H(glVertex2f),
@@ -1047,7 +1325,16 @@ const HookSpec kGL[] = {
 
 const HookSpec kAGL[] = {
     {"aglChoosePixelFormat", aglChoosePixelFormat},
-    {"aglDestroyPixelFormat", agl_true},
+    {"aglChoosePixelFormatCFM", aglChoosePixelFormat},
+    {"aglQueryRendererInfo", aglQueryRendererInfo},
+    {"aglQueryRendererInfoCFM", aglQueryRendererInfo},
+    {"aglNextRendererInfo", aglNextRendererInfo},
+    {"aglDescribeRenderer", aglDescribeRenderer},
+    {"aglDestroyRendererInfo", aglDestroyRendererInfo},
+    {"aglCreateContextCFM", aglCreateContext},
+    {"aglDescribePixelFormat", aglDescribePixelFormat},
+    {"aglDisable", aglDisable},
+    {"aglDestroyPixelFormat", aglDestroyPixelFormat},
     {"aglCreateContext", aglCreateContext},
     {"aglDestroyContext", aglDestroyContext},
     {"aglSetCurrentContext", aglSetCurrentContext},
@@ -1058,13 +1345,15 @@ const HookSpec kAGL[] = {
     {"aglSetFullScreen", aglSetFullScreen},
     {"aglSetInteger", agl_true},
     {"aglConfigure", agl_true},
-    {"aglGetError", agl_zero},
+    {"aglGetError", aglGetError},
     {"aglErrorString", aglErrorString},
 };
+const HookSpec kGLU[] = {{"gluOrtho2D", gluOrtho2D}};
 
 const HookLibrary kLibraries[] = {
     {"/OpenGL.framework/Versions/A/Libraries/libGL.dylib", "gl", kGL, sizeof kGL / sizeof kGL[0], true},
     {"/AGL.framework/Versions/A/AGL", "agl", kAGL, sizeof kAGL / sizeof kAGL[0], true},
+    {"/OpenGL.framework/Versions/A/Libraries/libGLU.dylib", "", kGLU, sizeof kGLU / sizeof kGLU[0], true},
 };
 
 }  // namespace

@@ -12,10 +12,11 @@ environment variables, none of which change anything unless set:
 | `COCAINE_DAEMONS=all`, `none`, or labels | which of Apple's daemons the session may start, instead of the usual list |
 | `COCAINE_NO_VIEWER=1` | don't open the viewer window |
 | `COCAINE_DUMP=address:bytes:seconds:file` | write that guest memory (hexadecimal address) to `file.<pid>` after that long |
-| `COCAINE_SCRIPT="wait 20; click 300 400; key 28 56; shot /tmp/a.raw"` | play mouse and key actions into the guest's input system: `wait`, `move`, `down`, `up`, `dragto`, `click`, `drag`, `key`; `settle` and `change X Y W H` time how fast the window server and the display respond; `shot FILE` saves the display (see `run_input_script` in `src/kernel/iokit.cpp`) |
+| `COCAINE_SCRIPT="wait 20; click 300 400; key 28 56; shot /tmp/a.raw"` | play mouse and key actions into the guest's input system: `wait`, `move`, `down`, `up`, `dragto`, `click`, `drag`, `key`; `settle` and `change X Y W H` time how fast the window server and the display respond; `shot FILE` saves the published display at its current mode's dimensions, without forcing a refresh (see `run_input_script` in `src/kernel/iokit.cpp`) |
 | `COCAINE_POKE=x,y,seconds` | short for a script that, after that long, clicks at x,y and types 8 and 9 |
 | `COCAINE_NOTE_INPUT=1` | for three seconds after each click or key, log every message the window server sends and receives, with times |
 | `COCAINE_VIEWER_SNAPSHOT=file.png` | have the viewer save what its window shows, twelve seconds in |
+| `COCAINE_VIEWER_DOUBLE=1` | show each guest pixel twice as wide and high where it fits (the launcher enables it for Ghost Recon Demo; `0` keeps the usual size) |
 | `COCAINE_NOTE_MSG=number,first-last` | log every process that sends one of those Mach requests, and the answer it gets |
 | `COCAINE_CALLS=address,address` | log each call a PowerPC guest makes to one of those addresses, with its arguments |
 | `COCAINE_WATCH=address` | log each PowerPC store of a word to that address, and the code that made it |
@@ -29,7 +30,7 @@ environment variables, none of which change anything unless set:
 | `COCAINE_FAULT_MEM=r6:160,@2eebd0:16` | when a PowerPC guest crashes, also print memory at those registers or addresses (the crash report always names the library each caller is in) |
 | `COCAINE_NAN=1` | report the first places a PowerPC guest's floating point arithmetic makes a NaN out of numbers, with the inputs (interpreted, so slow) |
 | `COCAINE_GL_FRAME=n:file` | save OpenGL frame n, as cocaine read it back from the Mac's GPU, to `file` (raw, A R G B, bottom row first) |
-| `COCAINE_GL_FPS=60` | the most frames a second an OpenGL game is shown at (60 unless set, as vertical sync held games to on a Mac of the time; 0 for no limit) |
+| `COCAINE_GL_FPS=60` | the most frames a second an OpenGL game is shown at (60 unless set; the launcher uses 120 for Ghost Recon Demo unless inherited; 0 for no limit) |
 | `COCAINE_DISPLAY=1280x1024` | the guest display's size (2560 x 1600 unless told otherwise; the tests use 1280 x 1024) |
 | `COCAINE_WALLPAPER=path` | the guest's desktop picture, a JPEG or PNG on this Mac (`images/linen.jpeg` by default, else Leopard's `DefaultDesktop.jpg`); `none` leaves the window server's plain grey (see `src/kernel/wallpaper.cpp`) |
 | `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the guest's menu bar instead of cocaine's (a pile of powder, drawn in each logo's colour into a copy of Leopard's art file, `.cocaine/art/` in the system root; see `src/session/art.cpp`) |

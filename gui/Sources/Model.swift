@@ -351,6 +351,33 @@ final class AppModel: ObservableObject {
 
   // MARK: Running
 
+  static func isGhostReconDemo(_ target: URL) -> Bool {
+    let enclosing = target.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    guard let bundle = Bundle(url: target) ?? Bundle(url: enclosing),
+          bundle.bundleIdentifier == "com.aspyr.ghostrecon",
+          bundle.object(forInfoDictionaryKey: "CFBundleName") as? String == "Ghost Recon Demo",
+          let executable = bundle.executableURL else { return false }
+    let selected = target.standardizedFileURL.resolvingSymlinksInPath()
+    let app = bundle.bundleURL.standardizedFileURL.resolvingSymlinksInPath()
+    let main = executable.standardizedFileURL.resolvingSymlinksInPath()
+    return selected == app || selected == main
+  }
+
+  static func displayForRun(_ target: URL, inherited: [String: String]) -> String? {
+    guard inherited["COCAINE_DISPLAY"] == nil, isGhostReconDemo(target) else { return nil }
+    return "800x600"
+  }
+
+  static func frameRateForRun(_ target: URL, inherited: [String: String]) -> String? {
+    guard inherited["COCAINE_GL_FPS"] == nil, isGhostReconDemo(target) else { return nil }
+    return "120"
+  }
+
+  static func viewerDoubleForRun(_ target: URL, inherited: [String: String]) -> String? {
+    guard inherited["COCAINE_VIEWER_DOUBLE"] == nil, isGhostReconDemo(target) else { return nil }
+    return "1"
+  }
+
   func run() async {
     guard let target, !running, isReady else { return }
     remember(target)
@@ -359,7 +386,20 @@ final class AppModel: ObservableObject {
     runLog.add("cocaine \(args.joined(separator: " "))")
     running = true
     stopPressed = false
-    let command = RunningCommand(binaryPath, args, environment: ["COCAINE_SYSROOT": sysrootPath])
+    var environment = ["COCAINE_SYSROOT": sysrootPath]
+    if let display = Self.displayForRun(target, inherited: Shell.environment) {
+      environment["COCAINE_DISPLAY"] = display
+      runLog.add("Using an 800 x 600 display for Ghost Recon Demo...")
+    }
+    if let frameRate = Self.frameRateForRun(target, inherited: Shell.environment) {
+      environment["COCAINE_GL_FPS"] = frameRate
+      runLog.add("Using up to 120 frames a second for Ghost Recon Demo...")
+    }
+    if let doublePixels = Self.viewerDoubleForRun(target, inherited: Shell.environment) {
+      environment["COCAINE_VIEWER_DOUBLE"] = doublePixels
+      runLog.add("Doubling the display pixels for Ghost Recon Demo...")
+    }
+    let command = RunningCommand(binaryPath, args, environment: environment)
     runCommand = command
     let log = runLog
     let status = await command.run { log.add($0) }

@@ -150,17 +150,30 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   server alone until something asks for it. The window server draws into a
   "VirtualDisplay" of its own making; checked CoreGraphics patches for the
   original release and 10.5.6 set its size. Its cocaine copies whatever changes
-  there into a small shared file, checking 120 times a second, and starts
+  there into a small shared file, checking up to 250 times a second, and starts
   `cocaine --view` on it. cocaine hooks the window server's own
   `CGXUpdateDisplay` (a private CoreGraphics function, on both CPUs): when
   it returns, the screen holds a whole picture, and what changed is copied
   to the viewer then, on the window server's thread, before the next update
   can start, so a window halfway through being redrawn is never shown torn.
   On the checked 10.5.6 PowerPC CoreGraphics, a second hook tracks virtual
-  display mode changes, including row stride; RGB555 pixels are expanded
-  to the viewer's 32-bit format.
-  (A polling copier remains for a window server where the hook isn't
-  working, and stands down once the hook has published.) The file's frame
+  display mode changes, including dimensions and row stride; RGB555 pixels
+  are expanded to the viewer's 32-bit format. The shared file holds the
+  current dimensions with its frame sequence, and has room for modes that
+  fit the window server's shared framebuffer, including 16-bit modes expanded
+  to 32 bits. The viewer updates its aspect ratio and input mapping when
+  dimensions change.
+  The launcher starts Ghost Recon Demo with an 800x600 display, unless an
+  explicit `COCAINE_DISPLAY` is inherited: at the default size its drawable
+  is too small for its viewport after it switches display modes. It also
+  sets `COCAINE_GL_FPS=120` unless inherited, to reduce input latency, and
+  `COCAINE_VIEWER_DOUBLE=1` unless inherited, to show each guest pixel twice
+  as wide and high where the screen has room.
+  A polling copier stands down while the hook is active and resumes if it
+  stops reporting updates: some games change the display without calling
+  `CGXUpdateDisplay`. Those fallback copies can show a partially drawn frame.
+  Scripted screenshots read the published file without forcing a refresh,
+  so they test what the viewer can actually see. The file's frame
   number is odd while a picture is being written, so the viewer never takes
   a half-written one. The viewer is a plain macOS window that hands each new picture
   to its layer, so this Mac's graphics hardware does the scaling
@@ -173,21 +186,23 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   shared event queue (`post_input_event` in `src/kernel/iokit.cpp`), where
   the window server finds them as it would on real hardware, and it decides
   which app gets what. The viewer sends the Mac's own measure of each
-  movement with it, in points (one to a pixel on a Mac of 2007), and that
-  is the movement the guest is told of, so a game turning its camera by the
-  mouse turns it as much as it did on a real Mac, not twice that at the
-  usual 2x display. When the window server moves the pointer itself
+  movement with it, scaled to the current guest display and viewer size.
+  When a game captures the pointer for camera controls, its movement instead
+  stays in host points, so resizing the viewer does not change camera
+  sensitivity. When the window server moves the pointer itself
   (`IOHIDSetMouseLocation`, input method 4: two 16-bit numbers and a
   process id), the pointer stays there and, for a second and a half,
   moves by the mouse's movement from there instead of following the Mac's
   pointer, as on real hardware; a program doing that again and again (a
   game that recentres a hidden pointer) has the viewer hide the Mac's
   pointer and hold it still (`pointer_held` in the display file).
+  Command-Option-M also toggles capture manually; the viewer tells the input
+  system when capture changes, and releases it when the window loses focus.
 - **Games: OpenGL and OpenAL.** Leopard's OpenGL drives graphics cards no
   Apple Silicon Mac has, and run as guest code it finds no renderer at all:
   every call quietly does nothing (Marble Blast crashed several calls
   later, on a camera matrix OpenGL never filled in). So when a guest maps
-  the code of libGL, AGL or an OpenAL framework (its own bundled copy
+  the code of libGL, libGLU, AGL or an OpenAL framework (its own bundled copy
   counts), cocaine reads the library's exported symbols and writes a host
   call over the first instruction of each function it supplies
   (`src/kernel/hooks.cpp`). Whoever calls it, the game or another library,
@@ -210,9 +225,13 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   data needs no copy, because the host's swap-bytes pixel setting is kept
   the opposite of the guest's. Vertex arrays are noted when the guest
   points at them and converted at each draw. Each guest OpenGL context
-  draws into an offscreen framebuffer on the Mac's GPU. At
+  draws into an offscreen framebuffer on the Mac's GPU. AGL renderer
+  queries describe the host's renderers for the virtual main display;
+  pixel formats hold host CGL formats, though requested attributes are not
+  yet enforced. At
   `aglSwapBuffers` cocaine reads the frame back and copies it into the
-  game window's own pixels, then marks the window changed and has the
+  game window's own pixels, converting to RGB555 for a 16-bit QuickDraw
+  pixmap, then marks the window changed and has the
   guest's QuickDraw flush it, the way a game that drew in software did. The
   window server, the viewer and window moves then need nothing new. Those
   QuickDraw calls are guest functions, run from native code

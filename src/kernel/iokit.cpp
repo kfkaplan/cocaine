@@ -432,8 +432,8 @@ bool Process::io_memory(const KPort& port, u32 type, u32& address, u32& size) {
 //                             and log how long that took and how far behind it got
 //   change X Y W H            wait for that part of the display to change, and
 //                             log how long it took (measures from the command before)
-//   shot FILE                 write the display's pixels to FILE (four bytes each,
-//                             a display's width to a row), if this process holds the display
+//   shot FILE                 write the published display to FILE (four bytes each,
+//                             a display's width to a row), if this process holds it
 void Process::run_input_script(const std::string& script) {
   auto pause = [](double seconds) { usleep((useconds_t)(seconds * 1e6)); };
   auto depth = [this]() -> u32 {
@@ -504,15 +504,19 @@ void Process::run_input_script(const std::string& script) {
       // the display to look different, and log how long it took.
       const u32 rx = (u32)v[0], ry = (u32)v[1], rw = (u32)v[2], rh = (u32)v[3];
       u32 dw = 0, dh = 0;
-      guest_display_size(dw, dh);
+      if (display_file_) {
+        std::lock_guard<std::mutex> lk(publish_mu_);
+        dw = display_w_;
+        dh = display_h_;
+      }
       if (!display_file_ || (u64)rx + rw > dw || (u64)ry + rh > dh || !rw || !rh) continue;
       auto grab = [&] {
         std::vector<u8> px;
         std::lock_guard<std::mutex> lk(publish_mu_);
-        publish_changed();
+        if ((u64)rx + rw > display_w_ || (u64)ry + rh > display_h_) return px;
         const u8* pixels = display_file_ + sizeof(DisplayFileHeader);
         for (u32 row = 0; row < rh; row++) {
-          const u8* from = pixels + ((size_t)(ry + row) * dw + rx) * 4;
+          const u8* from = pixels + ((size_t)(ry + row) * display_w_ + rx) * 4;
           px.insert(px.end(), from, from + rw * 4);
         }
         return px;
@@ -529,11 +533,11 @@ void Process::run_input_script(const std::string& script) {
                (unsigned long long)((clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - from) / 1000000));
     } else if (w == "shot" && sscanf(line.c_str(), " %*s %511s", text) == 1) {
       u32 dw = 0, dh = 0;
-      guest_display_size(dw, dh);
-      const u32 bytes = dw * dh * 4;
       if (display_file_) {
         std::lock_guard<std::mutex> lk(publish_mu_);
-        publish_changed();
+        dw = display_w_;
+        dh = display_h_;
+        const u32 bytes = dw * dh * 4;
         if (FILE* f = fopen(text, "wb")) {
           if (fwrite(display_file_ + sizeof(DisplayFileHeader), 1, bytes, f) != bytes)
             log_warn("input script: could not write the display picture to %s", text);
@@ -593,6 +597,10 @@ void Process::set_pointer(s32 x, s32 y) {
 // many lines down and across.
 void Process::post_input_event(u32 type, s32 x, s32 y, u32 key, u32 extra, s32 more) {
   std::lock_guard<std::mutex> lk(hid_mu_);
+  if (type == kViewerCaptureChanged) {
+    hid_viewer_captured_ = x != 0;
+    return;
+  }
   if (!hid_memory_) return;
   if (getenv("COCAINE_NOTE_INPUT") && type != kMoved) {  // for working on cocaine: note what follows
     note_from_ = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
@@ -601,14 +609,20 @@ void Process::post_input_event(u32 type, s32 x, s32 y, u32 key, u32 extra, s32 m
   const EvLayout& l = mem_.big_endian() ? kEvPowerPC : kEvIntel;
   const u32 g = hid_memory_ + kEvGlobals;
   const bool moved = type == kMoved || type == kLeftDragged || type == kRightDragged;
-  const bool held = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) < hid_relative_until_;
+  const bool held = hid_viewer_captured_ || clock_gettime_nsec_np(CLOCK_UPTIME_RAW) < hid_relative_until_;
   s32 dx = 0, dy = 0;
   if (moved) {
     dx = more == 1 ? (s32)key : x - hid_x_;
     dy = more == 1 ? (s32)extra : y - hid_y_;
     if (held) {  // from where the window server put the pointer (see set_pointer)
       u32 w = 0, h = 0;
-      guest_display_size(w, h);
+      if (display_file_) {
+        const auto* display = (const DisplayFileHeader*)display_file_;
+        w = __atomic_load_n(&display->width, __ATOMIC_RELAXED);
+        h = __atomic_load_n(&display->height, __ATOMIC_RELAXED);
+      } else {
+        guest_display_size(w, h);
+      }
       x = std::clamp(hid_x_ + dx, 0, (s32)w - 1);
       y = std::clamp(hid_y_ + dy, 0, (s32)h - 1);
     }

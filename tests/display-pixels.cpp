@@ -15,5 +15,10 @@ int main() {
   for (u32 y = 0; y < 2; y++) rgb555_to_display(ppc + y * 6, out + y * 8, 2, true);
   if (memcmp(out, expected_ppc, sizeof out)) return 1;
   for (u32 y = 0; y < 2; y++) rgb555_to_display(intel + y * 6, out + y * 8, 2, false);
-  return memcmp(out, expected_intel, sizeof out) ? 1 : 0;
+  if (memcmp(out, expected_intel, sizeof out)) return 1;
+  u8 converted[] = {0, 0, 0, 0, 0xaa, 0xaa, 0, 0, 0, 0, 0xaa, 0xaa};
+  for (u32 y = 0; y < 2; y++) display_to_rgb555(expected_ppc + y * 8, converted + y * 6, 2, true);
+  if (memcmp(converted, ppc, sizeof converted)) return 1;
+  for (u32 y = 0; y < 2; y++) display_to_rgb555(expected_intel + y * 8, converted + y * 6, 2, false);
+  return memcmp(converted, intel, sizeof converted) ? 1 : 0;
 }

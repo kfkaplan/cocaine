@@ -37,7 +37,13 @@ setting up and running for you, in three tabs
   system root, readable only by you.
 - **Run -** pick an old app or drop one on it, choose Auto, PowerPC or
   Intel, and run it. Closing its window, or pressing stop, ends it. Kill All
-  ends every cocaine process on your Mac.
+  ends every cocaine process on your Mac. Ghost Recon Demo uses an 800 x 600
+  display, doubled viewer pixels where they fit, and up to 120 frames a
+  second for lower input latency, unless `COCAINE_DISPLAY`,
+  `COCAINE_VIEWER_DOUBLE` or `COCAINE_GL_FPS` was set explicitly. The higher frame
+  rate and faster display polling use more power. Press Command-Option-M in
+  the guest window to capture or release the mouse; capture also releases
+  when the window loses focus.
 
 When it opens it checks GitHub for a newer version of itself and asks before updating
 
@@ -62,8 +68,8 @@ It still needs the build tools below. You can build it yourself with `gui/build.
 - The programs to run. None come with this repository.
 - Classic PowerPC PEF/CFM support is experimental. EV Nova 1.0.0 gets past
   loading and monitor setup, but still stops at registration-tool initialization.
-  Ghost Recon Demo gets past its installation check but crashes during AGL
-  graphics setup.
+  Ghost Recon Demo reaches gameplay, with mouse capture available. The menu
+  can be cropped unless the display starts at 800 x 600.
 
 ## Building and running
 

@@ -238,9 +238,10 @@ class Process {
   // Maps the memory behind a memory-entry port into the guest. Returns a
   // Mach result, and the address in `at`.
   // Starts copying the guest window server's display out for the viewer.
-  void share_display(u32 addr);
+  void share_display(u32 addr, u64 bytes);
   bool display_shared_ = false;
   u8* display_file_ = nullptr;  // the shared file the viewer reads: header, then pixels
+  u64 display_source_bytes_ = 0, display_file_pixels_ = 0;
   u32 display_w_ = 0, display_h_ = 0;
   u32 display_stride_ = 0, display_bits_ = 32;
   std::mutex publish_mu_;
@@ -338,6 +339,7 @@ class Process {
   // when the pointer moves by the mouse's own movement from there rather than
   // following the Mac's pointer (uptime in nanoseconds). See set_pointer.
   u64 hid_last_warp_ = 0, hid_relative_until_ = 0;
+  bool hid_viewer_captured_ = false;
   u32 hid_buttons_ = 0;        // the mouse buttons held, the left one in bit 0
   // For working on cocaine: until this time, every message this process
   // sends is noted, to see what the window server does with an input event.
@@ -372,6 +374,8 @@ class Process {
 
   std::vector<std::string> argv_, envp_;
   std::string exe_path_;
+  mutable std::mutex proc_name_mu_;
+  std::string proc_name_;
   bool is_login_window_ = false;  // this program is the system's loginwindow, yet to say the session is ready
   bool has_windows_ = false;      // an application, by the look of it: it will want the window server
 

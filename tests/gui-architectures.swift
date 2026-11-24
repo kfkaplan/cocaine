@@ -3,6 +3,7 @@ import Foundation
 
 @main
 struct ArchitectureTests {
+  @MainActor
   static func main() throws {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -28,6 +29,47 @@ struct ArchitectureTests {
     try Data(pef).write(to: macOS.appendingPathComponent("Game"))
     precondition(Architectures.of(bundle) == [.powerpc, .classicPEF],
                  "extensionless app bundle not recognized")
+    let demo = dir.appendingPathComponent("Ghost Recon Demo")
+    let demoContents = demo.appendingPathComponent("Contents")
+    let demoMacOS = demoContents.appendingPathComponent("MacOS")
+    try FileManager.default.createDirectory(at: demoMacOS, withIntermediateDirectories: true)
+    let demoPlist: [String: String] = ["CFBundleExecutable": "Ghost Recon Demo",
+                                       "CFBundlePackageType": "APPL",
+                                       "CFBundleIdentifier": "com.aspyr.ghostrecon",
+                                       "CFBundleName": "Ghost Recon Demo"]
+    let demoData = try PropertyListSerialization.data(fromPropertyList: demoPlist, format: .xml, options: 0)
+    try demoData.write(to: demoContents.appendingPathComponent("Info.plist"))
+    let demoExecutable = demoMacOS.appendingPathComponent("Ghost Recon Demo")
+    try Data(pef).write(to: demoExecutable)
+    precondition(AppModel.displayForRun(demo, inherited: [:]) == "800x600")
+    precondition(AppModel.displayForRun(demoExecutable, inherited: [:]) == "800x600")
+    precondition(AppModel.displayForRun(demo, inherited: ["COCAINE_DISPLAY": "1024x768"]) == nil)
+    precondition(AppModel.displayForRun(bundle, inherited: [:]) == nil)
+    precondition(AppModel.displayForRun(demoMacOS.appendingPathComponent("Other"), inherited: [:]) == nil)
+    precondition(AppModel.frameRateForRun(demo, inherited: [:]) == "120")
+    precondition(AppModel.frameRateForRun(demoExecutable, inherited: [:]) == "120")
+    precondition(AppModel.frameRateForRun(demo, inherited: ["COCAINE_GL_FPS": "60"]) == nil)
+    precondition(AppModel.frameRateForRun(demo, inherited: ["COCAINE_DISPLAY": "1024x768"]) == "120")
+    precondition(AppModel.frameRateForRun(bundle, inherited: [:]) == nil)
+    precondition(AppModel.frameRateForRun(demoMacOS.appendingPathComponent("Other"), inherited: [:]) == nil)
+    precondition(AppModel.viewerDoubleForRun(demo, inherited: [:]) == "1")
+    precondition(AppModel.viewerDoubleForRun(demoExecutable, inherited: [:]) == "1")
+    precondition(AppModel.viewerDoubleForRun(demo, inherited: ["COCAINE_VIEWER_DOUBLE": "0"]) == nil)
+    precondition(AppModel.viewerDoubleForRun(demo, inherited: ["COCAINE_DISPLAY": "1024x768"]) == "1")
+    precondition(AppModel.viewerDoubleForRun(bundle, inherited: [:]) == nil)
+    precondition(AppModel.viewerDoubleForRun(demoMacOS.appendingPathComponent("Other"), inherited: [:]) == nil)
+    let full = dir.appendingPathComponent("Ghost Recon")
+    let fullContents = full.appendingPathComponent("Contents")
+    let fullMacOS = fullContents.appendingPathComponent("MacOS")
+    try FileManager.default.createDirectory(at: fullMacOS, withIntermediateDirectories: true)
+    var fullPlist = demoPlist
+    fullPlist["CFBundleName"] = "Ghost Recon"
+    try PropertyListSerialization.data(fromPropertyList: fullPlist, format: .xml, options: 0)
+      .write(to: fullContents.appendingPathComponent("Info.plist"))
+    try Data(pef).write(to: fullMacOS.appendingPathComponent("Ghost Recon Demo"))
+    precondition(AppModel.displayForRun(full, inherited: [:]) == nil)
+    precondition(AppModel.frameRateForRun(full, inherited: [:]) == nil)
+    precondition(AppModel.viewerDoubleForRun(full, inherited: [:]) == nil)
     try check("truncated", Array(pef.prefix(16)), [])
     var wrongCPU = pef
     wrongCPU.replaceSubrange(8..<12, with: Array("m68k".utf8))

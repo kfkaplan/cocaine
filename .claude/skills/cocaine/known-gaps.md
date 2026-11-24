@@ -8,15 +8,17 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   remains unknown. Do not bypass the game's registration.
 - Ghost Recon Demo's extensionless app bundle is recognized and loads via
   LaunchCFMApp. With volume metadata fixed it gets past its installation
-  check, but crashes during graphics setup after unimplemented
-  `aglQueryRendererInfoCFM` and `aglChoosePixelFormatCFM` calls. It is not
-  yet playable.
+  check and reaches its menu using the AGL and GLU hooks. The launcher
+  starts it at 800x600 to avoid cropping; at the default display size the
+  menu is cropped after the game switches modes:
+  it uses a 640x480 GL viewport with a 400x300 QuickDraw drawable. The user
+  confirmed that gameplay displays after the larger mode switch was fixed.
 - AppleDouble resource forks are exposed read-only from temporary files when
   native metadata is missing. Their file descriptors do not retain the
   original fork's path, and writable sidecar forks are not supported.
-- Switching the virtual display to RGB555 is handled only for the checked
-  10.5.6 PowerPC CoreGraphics implementation. Other implementations and
-  8-bit display modes are not supported for this mode switch.
+- Virtual display mode switching is tracked only for the checked 10.5.6
+  PowerPC CoreGraphics implementation. 8-bit modes and modes exceeding the
+  window server's shared framebuffer are not supported.
 
 - Some Mach port rights are never released: rights that arrive with
   requests from other processes, IOKit's registry and iterator ports, and
@@ -24,17 +26,21 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   heavy system traffic.
 
 - OpenGL and OpenAL pass through for both CPUs, but only the
-  functions Marble Blast uses: much of OpenGL 1.x, AGL's context calls and
-  OpenAL 1.1's playback calls. Another game will want others, which
+  functions used by the games tested so far: much of OpenGL 1.x, some AGL
+  and GLU calls, and OpenAL 1.1's playback calls. Another game will want others, which
   announce themselves on the first call ("... is not passed through to the
-  Mac yet"). Full screen (`aglSetFullScreen`) isn't done, so games have to
+  Mac yet"). AGL pixel-format requests are logged but not enforced: the
+  existing fixed accelerated format is used instead. Full screen
+  (`aglSetFullScreen`) isn't done, so games have to
   be set to play in a window. DrawSprocket still runs as guest code and
   does nothing useful.
 - Sound comes out of one stereo 44.1 kHz device, with no input. The guest's
   Component Manager finds no components at all under cocaine (why is not
   known yet); the output units are supplied instead, but other components
   (Sound Manager's, QuickTime's codecs) still can't be found.
-- Games are held to 60 frames a second (`COCAINE_GL_FPS`); past that, each
+- Games are held to 60 frames a second by default (`COCAINE_GL_FPS`); the
+  launcher uses 120 for Ghost Recon Demo unless explicitly overridden. Past
+  the screen's refresh, each
   frame only costs power, twice, since the guest's window server composites
   each one. Even so, a game's window in 2x mode is enlarged by the emulated
   window server every frame, which is most of what it costs while playing

@@ -22,6 +22,8 @@
 @interface CocaineDisplayView : NSView {
  @public
   const uint8_t* pixels;
+  const DisplayFileHeader* header;
+  size_t pixelCapacity;
   int width, height;
   bool bigEndian;
   pid_t writer;
@@ -30,10 +32,12 @@
   double scrollX, scrollY;         // scrolling not yet amounting to a whole line
   const volatile uint32_t* held;   // when the guest last held the pointer (DisplayFileHeader)
   bool holding;                    // the Mac's pointer is hidden and kept still for it
+  bool manualCapture, suppressAutoHold, swallowCaptureKeyUp;
   bool skipMove;                   // the next movement includes putting the pointer back
   double moveX, moveY;             // movement not yet amounting to a whole point
 }
 - (void)show;
+- (void)hold:(bool)hold;
 @end
 
 @implementation CocaineDisplayView
@@ -46,7 +50,11 @@
 - (void)show {
   const uint32_t before = __atomic_load_n(frame, __ATOMIC_ACQUIRE);
   if (before & 1) return;
-  const size_t bytes = (size_t)width * height * 4;
+  const uint32_t w = __atomic_load_n(&header->width, __ATOMIC_RELAXED);
+  const uint32_t h = __atomic_load_n(&header->height, __ATOMIC_RELAXED);
+  const uint64_t bytes64 = (uint64_t)w * h * 4;
+  if (!w || !h || bytes64 > pixelCapacity) return;
+  const size_t bytes = (size_t)bytes64;
   CFDataRef copy = CFDataCreate(NULL, pixels, (CFIndex)bytes);
   // The copy's reads must be done before the number is read again. An
   // acquire load alone only holds back what comes after it, and this Mac's
@@ -57,6 +65,14 @@
     return;
   }
   shown = before;
+  if (width != (int)w || height != (int)h) {
+    width = (int)w;
+    height = (int)h;
+    const NSSize old = self.bounds.size;
+    const CGFloat fit = std::min(old.width / width, old.height / height);
+    self.window.contentAspectRatio = NSMakeSize(width, height);
+    [self.window setContentSize:NSMakeSize(width * fit, height * fit)];
+  }
   CGDataProviderRef data = CGDataProviderCreateWithCFData(copy);
   CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
   CGImageRef image = CGImageCreate(width, height, 8, 32, (size_t)width * 4, space,
@@ -98,14 +114,13 @@
   } else if (kind >= 1 && kind <= 4) {
     more = (int32_t)event.clickCount;  // 2 for the second click of a double click
   } else if (kind >= 5 && kind <= 7) {
-    // How far the mouse moved, as this Mac measured it, in points (a Mac of
-    // 2007 had one pixel to each), fractions saved up. A game holding the
-    // pointer (see -tick:) goes by this alone, down being positive.
+    // Scale movement with the displayed picture unless a game has captured
+    // the pointer for camera controls; keep fractions between events.
     if (skipMove) {
       skipMove = false;
     } else {
-      moveX += event.deltaX;
-      moveY += event.deltaY;
+      moveX += event.deltaX * (holding ? 1 : width / size.width);
+      moveY += event.deltaY * (holding ? 1 : height / size.height);
     }
     key = (int32_t)moveX;
     extra = (int32_t)moveY;
@@ -127,8 +142,26 @@
                              (int32_t)((size.height - p.y) * height / size.height), key, extra, more};
   (void)write(STDOUT_FILENO, record, sizeof record);
 }
-- (void)keyDown:(NSEvent*)event { [self send:10 event:event]; }
-- (void)keyUp:(NSEvent*)event { [self send:11 event:event]; }
+- (void)keyDown:(NSEvent*)event {
+  const NSEventModifierFlags modifiers = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
+  if (event.keyCode == 46 && modifiers == (NSEventModifierFlagCommand | NSEventModifierFlagOption)) {
+    if (!event.isARepeat) {
+      manualCapture = !holding;
+      suppressAutoHold = holding;
+      [self hold:manualCapture];
+    }
+    swallowCaptureKeyUp = true;
+    return;
+  }
+  [self send:10 event:event];
+}
+- (void)keyUp:(NSEvent*)event {
+  if (event.keyCode == 46 && swallowCaptureKeyUp) {
+    swallowCaptureKeyUp = false;
+    return;
+  }
+  [self send:11 event:event];
+}
 - (void)flagsChanged:(NSEvent*)event { [self send:12 event:event]; }
 - (void)mouseDown:(NSEvent*)event { [self send:1 event:event]; }
 - (void)mouseUp:(NSEvent*)event { [self send:2 event:event]; }
@@ -146,6 +179,12 @@
 - (void)hold:(bool)hold {
   if (hold == holding) return;
   holding = hold;
+  moveX = moveY = 0;
+  skipMove = false;
+  const int32_t record[6] = {(int32_t)kViewerCaptureChanged, hold ? 1 : 0, 0, 0, 0, 0};
+  (void)write(STDOUT_FILENO, record, sizeof record);
+  self.window.title = hold ? @"cocaine: Mac OS X 10.5 - mouse captured (Cmd-Option-M to release)"
+                           : @"cocaine: Mac OS X 10.5";
   if (hold) {
     const NSRect r = [self.window convertRectToScreen:[self convertRect:self.bounds toView:nil]];
     const CGFloat top = NSScreen.screens.count ? NSMaxY(NSScreen.screens[0].frame) : 0;
@@ -159,12 +198,20 @@
   }
 }
 - (void)tick:(NSTimer*)timer {
-  if (*frame != shown) [self show];
+  if (__atomic_load_n(frame, __ATOMIC_ACQUIRE) != shown) [self show];
   const uint32_t at = __atomic_load_n(held, __ATOMIC_ACQUIRE);
   const uint32_t now = (uint32_t)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000000);
-  [self hold:at != 0 && now - at < 1500 && NSApp.isActive && self.window.isKeyWindow];
+  const bool active = NSApp.isActive && self.window.isKeyWindow;
+  if (!active) {
+    manualCapture = false;
+    suppressAutoHold = false;
+  }
+  [self hold:active && (manualCapture || (!suppressAutoHold && at != 0 && now - at < 1500))];
   static int ticks;
-  if (++ticks % 60 == 0 && kill(writer, 0) != 0) [NSApp terminate:nil];  // the guest system has gone
+  if (++ticks % 60 == 0 && kill(writer, 0) != 0) {
+    [self hold:false];
+    [NSApp terminate:nil];
+  }
 }
 @end
 
@@ -184,13 +231,18 @@ int run_viewer(const char* path) {
   @autoreleasepool {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    // One guest pixel to each of the screen's own, where that fits (a Retina
-    // screen has two of its pixels to a point); otherwise as big as fits,
-    // the same shape.
+    // One guest pixel to each of the screen's own, or two when requested,
+    // where that fits (a Retina screen has two of its pixels to a point).
     NSScreen* screen = NSScreen.mainScreen;
     const CGFloat scale = screen ? screen.backingScaleFactor : 1;
     const NSRect room = screen ? screen.visibleFrame : NSMakeRect(0, 0, 1280, 800);
-    CGFloat w = head->width / scale, h = head->height / scale;
+    const char* doublePixels = getenv("COCAINE_VIEWER_DOUBLE");
+    if (doublePixels && strcmp(doublePixels, "0") != 0 && strcmp(doublePixels, "1") != 0) {
+      fprintf(stderr, "COCAINE_VIEWER_DOUBLE must be 0 or 1\n");
+      return 1;
+    }
+    const CGFloat pixelScale = doublePixels && strcmp(doublePixels, "1") == 0 ? 2 : 1;
+    CGFloat w = head->width * pixelScale / scale, h = head->height * pixelScale / scale;
     const CGFloat fit = std::min({1.0, (room.size.width - 40) / w, (room.size.height - 60) / h});
     w = std::floor(w * fit);
     h = std::floor(h * fit);
@@ -206,6 +258,8 @@ int run_viewer(const char* path) {
     window.contentAspectRatio = NSMakeSize(head->width, head->height);
     CocaineDisplayView* view = [[CocaineDisplayView alloc] initWithFrame:frame];
     view->pixels = map + sizeof *head;
+    view->header = head;
+    view->pixelCapacity = (size_t)st.st_size - sizeof *head;
     view->width = (int)head->width;
     view->height = (int)head->height;
     view->bigEndian = head->big_endian != 0;
@@ -229,6 +283,7 @@ int run_viewer(const char* path) {
                                                   usingBlock:^(NSNotification* note) {
                                                     // Closing the window ends the whole run:
                                                     // say so (kind 0) before going.
+                                                    [view hold:false];
                                                     const int32_t closed[6] = {0, 0, 0, 0, 0, 0};
                                                     (void)write(STDOUT_FILENO, closed, sizeof closed);
                                                     [NSApp terminate:nil];

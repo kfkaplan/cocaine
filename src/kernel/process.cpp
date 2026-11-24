@@ -136,6 +136,8 @@ bool Process::load(const MachImage& exe, const std::vector<std::string>& host_ar
   // A program inside the system root sees itself at its Mac OS X path.
   std::vector<std::string> argv = host_argv;
   exe_path_ = guest_path(argv[0]);
+  const size_t slash = exe_path_.rfind('/');
+  proc_name_ = exe_path_.substr(slash == std::string::npos ? 0 : slash + 1, 32);
   {
     static const char kLoginWindow[] = "/loginwindow";
     const size_t n = sizeof kLoginWindow - 1;

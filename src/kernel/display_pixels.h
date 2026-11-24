@@ -13,3 +13,14 @@ inline void rgb555_to_display(const u8* src, u8* dst, u32 width, bool big_endian
     else { dst[4*x] = b; dst[4*x+1] = g; dst[4*x+2] = r; dst[4*x+3] = 0; }
   }
 }
+
+inline void display_to_rgb555(const u8* src, u8* dst, u32 width, bool big_endian) {
+  for (u32 x = 0; x < width; x++) {
+    const u8 r = src[4*x + (big_endian ? 1 : 2)];
+    const u8 g = src[4*x + (big_endian ? 2 : 1)];
+    const u8 b = src[4*x + (big_endian ? 3 : 0)];
+    const u16 pixel = (u16)((r >> 3) << 10 | (g >> 3) << 5 | (b >> 3));
+    dst[2*x + (big_endian ? 0 : 1)] = (u8)(pixel >> 8);
+    dst[2*x + (big_endian ? 1 : 0)] = (u8)pixel;
+  }
+}

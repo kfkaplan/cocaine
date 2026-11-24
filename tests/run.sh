@@ -143,6 +143,32 @@ if [ -f "$root/usr/lib/dyld" ]; then
         cat "$log"
         fail=$((fail + 1))
       fi
+      log="$work/agl-$arch.log"
+      actual=$(PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
+        "$root/usr/bin/python2.5" -c "$(cat "$here/guest/agl.py")" 2>"$log")
+      status=$?
+      if [ "$status" -eq 0 ] && [ "$actual" = "AGL compatibility ok" ]; then
+        echo "ok    $arch AGL compatibility"
+        pass=$((pass + 1))
+      else
+        echo "FAIL  $arch AGL compatibility: $actual"
+        drop_noise "$log"
+        cat "$log"
+        fail=$((fail + 1))
+      fi
+      log="$work/sysctl-$arch.log"
+      actual=$(PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
+        "$root/usr/bin/python2.5" -c "$(cat "$here/guest/sysctl.py")" 2>"$log")
+      status=$?
+      if [ "$status" -eq 0 ] && [ "$actual" = "process name sysctl ok" ]; then
+        echo "ok    $arch process name sysctl"
+        pass=$((pass + 1))
+      else
+        echo "FAIL  $arch process name sysctl: $actual"
+        drop_noise "$log"
+        cat "$log"
+        fail=$((fail + 1))
+      fi
     fi
     # Processes: the shell forks, runs programs and scripts, pipes them
     # together and traps signals; arch starts programs for the other CPU.
@@ -203,6 +229,37 @@ if [ -f "$root/usr/lib/dyld" ]; then
         fail=$((fail + 1))
       fi
       if [ "$arch" = ppc ]; then
+        if [ "$version" = 10.5.6 ] && [ -f "$root/usr/bin/python2.5" ]; then
+          mode_work=$(mktemp -d /tmp/cocaine-mode-test.XXXXXX)
+          for modes in '1280 1024 800 600 16' '800 600 1024 768 32'; do
+            set -- $modes
+            original_w=$1 original_h=$2 mode_w=$3 mode_h=$4 mode_bits=$5
+            first=$mode_work/switched.raw
+            second=$mode_work/restored.raw
+            log=$mode_work/app.log
+            actual=$(COCAINE_DISPLAY="${original_w}x${original_h}" \
+              COCAINE_SCRIPT="wait 20; shot $first; wait 20; shot $second" \
+              PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch ppc --sysroot "$root" \
+              "$root/usr/bin/python2.5" -c "$(cat "$here/guest/display-mode.py")" \
+              "$mode_w" "$mode_h" "$mode_bits" "$original_w" "$original_h" 2>"$log")
+            status=$?
+            if [ "$status" -eq 0 ] && [ "$actual" = "display mode switch ok" ] &&
+              [ -s "$first" ] && [ -s "$second" ] &&
+              python3 -c 'import sys; paths = sys.argv[1:3]; sizes = [int(n) for n in sys.argv[3:]]; data = [open(p, "rb").read() for p in paths]; sys.exit(0 if all(len(d) == n and len({d[i:i+4] for i in range(0, len(d), 64)}) > 3 for d, n in zip(data, sizes)) else 1)' \
+                "$first" "$second" "$((mode_w * mode_h * 4))" "$((original_w * original_h * 4))"; then
+              echo "ok    ppc display mode ${original_w}x${original_h} to ${mode_w}x${mode_h} and restore"
+              pass=$((pass + 1))
+            else
+              echo "FAIL  ppc display mode ${original_w}x${original_h} to ${mode_w}x${mode_h} and restore: $actual"
+              drop_noise "$log"
+              cat "$log"
+              fail=$((fail + 1))
+            fi
+            rm -f "$first" "$second" "$log"
+          done
+          rmdir "$mode_work"
+        fi
+
         # Exercise the default large display, not just Leopard's native size:
         # a partial or missing CoreGraphics patch used to produce a black screen.
         display_work=$(mktemp -d /tmp/cocaine-display-test.XXXXXX)
