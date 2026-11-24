@@ -24,7 +24,8 @@ The guest system's screen appears in a window on your Mac.
 - **Command line tools, shells and scripting languages -** from Leopard -
   `ls`, `bash`, `zsh`, Python 2.5, Perl, Ruby and the rest.
 
-Closing the cocaine window ends the run
+The cocaine window follows guest display resolution changes, using two screen
+pixels per guest pixel where they fit. Closing it ends the run.
 
 ## The cocaine app
 

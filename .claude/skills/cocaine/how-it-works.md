@@ -161,8 +161,10 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   are expanded to the viewer's 32-bit format. The shared file holds the
   current dimensions with its frame sequence, and has room for modes that
   fit the window server's shared framebuffer, including 16-bit modes expanded
-  to 32 bits. The viewer updates its aspect ratio and input mapping when
-  dimensions change.
+  to 32 bits. When the dimensions change, the viewer resizes its window to
+  two physical screen pixels per guest pixel by default, or one with
+  `COCAINE_VIEWER_DOUBLE=0`, fitting it to the current screen if necessary.
+  It updates its aspect ratio and input mapping too.
   The launcher starts Ghost Recon Demo with an 800x600 display, unless an
   explicit `COCAINE_DISPLAY` is inherited: at the default size its drawable
   is too small for its viewport after it switches display modes. It also

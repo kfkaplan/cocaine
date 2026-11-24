@@ -19,12 +19,22 @@
 
 #include "viewer/viewer.h"
 
+static NSSize viewer_content_size(uint32_t width, uint32_t height, CGFloat pixelScale, NSScreen* screen) {
+  const CGFloat scale = screen ? screen.backingScaleFactor : 1;
+  const NSRect room = screen ? screen.visibleFrame : NSMakeRect(0, 0, 1280, 800);
+  const CGFloat w = width * pixelScale / scale, h = height * pixelScale / scale;
+  const CGFloat fit = std::min({1.0, std::max(1.0, room.size.width - 40) / w,
+                               std::max(1.0, room.size.height - 60) / h});
+  return NSMakeSize(std::max(1.0, std::floor(w * fit)), std::max(1.0, std::floor(h * fit)));
+}
+
 @interface CocaineDisplayView : NSView {
  @public
   const uint8_t* pixels;
   const DisplayFileHeader* header;
   size_t pixelCapacity;
   int width, height;
+  CGFloat pixelScale;
   bool bigEndian;
   pid_t writer;
   const volatile uint32_t* frame;  // the file's count of pictures
@@ -68,10 +78,19 @@
   if (width != (int)w || height != (int)h) {
     width = (int)w;
     height = (int)h;
-    const NSSize old = self.bounds.size;
-    const CGFloat fit = std::min(old.width / width, old.height / height);
-    self.window.contentAspectRatio = NSMakeSize(width, height);
-    [self.window setContentSize:NSMakeSize(width * fit, height * fit)];
+    NSWindow* window = self.window;
+    NSScreen* screen = window.screen ?: NSScreen.mainScreen;
+    const NSSize size = viewer_content_size(w, h, pixelScale, screen);
+    const NSRect old = window.frame;
+    NSRect next = [window frameRectForContentRect:NSMakeRect(0, 0, size.width, size.height)];
+    next.origin = NSMakePoint(NSMidX(old) - next.size.width / 2, NSMidY(old) - next.size.height / 2);
+    if (screen) {
+      const NSRect room = screen.visibleFrame;
+      next.origin.x = std::clamp(next.origin.x, NSMinX(room), std::max(NSMinX(room), NSMaxX(room) - next.size.width));
+      next.origin.y = std::clamp(next.origin.y, NSMinY(room), std::max(NSMinY(room), NSMaxY(room) - next.size.height));
+    }
+    window.contentAspectRatio = NSMakeSize(width, height);
+    [window setFrame:next display:YES];
   }
   CGDataProviderRef data = CGDataProviderCreateWithCFData(copy);
   CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
@@ -222,8 +241,10 @@ int run_viewer(const char* path) {
   const uint8_t* map = (const uint8_t*)mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);
   if (map == MAP_FAILED) return 1;
   const DisplayFileHeader* head = (const DisplayFileHeader*)map;
-  if (head->magic != kDisplayFileMagic ||
+  if (head->magic != kDisplayFileMagic || !head->width || !head->height ||
+      head->width > 4096 || head->height > 4096 ||
       (off_t)(sizeof *head + (size_t)head->width * head->height * 4) > st.st_size) {
+    fprintf(stderr, "invalid viewer display file\n");
     return 1;
   }
   unlink(path);  // it lives on for as long as the two programs have it mapped
@@ -231,21 +252,18 @@ int run_viewer(const char* path) {
   @autoreleasepool {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    // One guest pixel to each of the screen's own, or two when requested,
-    // where that fits (a Retina screen has two of its pixels to a point).
+    // Two screen pixels to each guest pixel where that fits (a Retina
+    // screen has two of its pixels to a point).
     NSScreen* screen = NSScreen.mainScreen;
-    const CGFloat scale = screen ? screen.backingScaleFactor : 1;
     const NSRect room = screen ? screen.visibleFrame : NSMakeRect(0, 0, 1280, 800);
     const char* doublePixels = getenv("COCAINE_VIEWER_DOUBLE");
     if (doublePixels && strcmp(doublePixels, "0") != 0 && strcmp(doublePixels, "1") != 0) {
       fprintf(stderr, "COCAINE_VIEWER_DOUBLE must be 0 or 1\n");
       return 1;
     }
-    const CGFloat pixelScale = doublePixels && strcmp(doublePixels, "1") == 0 ? 2 : 1;
-    CGFloat w = head->width * pixelScale / scale, h = head->height * pixelScale / scale;
-    const CGFloat fit = std::min({1.0, (room.size.width - 40) / w, (room.size.height - 60) / h});
-    w = std::floor(w * fit);
-    h = std::floor(h * fit);
+    const CGFloat pixelScale = doublePixels && strcmp(doublePixels, "0") == 0 ? 1 : 2;
+    const NSSize size = viewer_content_size(head->width, head->height, pixelScale, screen);
+    const CGFloat w = size.width, h = size.height;
     const NSRect frame = NSMakeRect(room.origin.x + (room.size.width - w) / 2,
                                     room.origin.y + (room.size.height - h) / 2, w, h);
     NSWindow* window = [[NSWindow alloc]
@@ -262,6 +280,7 @@ int run_viewer(const char* path) {
     view->pixelCapacity = (size_t)st.st_size - sizeof *head;
     view->width = (int)head->width;
     view->height = (int)head->height;
+    view->pixelScale = pixelScale;
     view->bigEndian = head->big_endian != 0;
     view->writer = (pid_t)head->writer;
     view->frame = &head->frame;

@@ -16,7 +16,7 @@ environment variables, none of which change anything unless set:
 | `COCAINE_POKE=x,y,seconds` | short for a script that, after that long, clicks at x,y and types 8 and 9 |
 | `COCAINE_NOTE_INPUT=1` | for three seconds after each click or key, log every message the window server sends and receives, with times |
 | `COCAINE_VIEWER_SNAPSHOT=file.png` | have the viewer save what its window shows, twelve seconds in |
-| `COCAINE_VIEWER_DOUBLE=1` | show each guest pixel twice as wide and high where it fits (the launcher enables it for Ghost Recon Demo; `0` keeps the usual size) |
+| `COCAINE_VIEWER_DOUBLE=0` | show one screen pixel per guest pixel where it fits, instead of the default two (the launcher sets `1` for Ghost Recon Demo unless inherited) |
 | `COCAINE_NOTE_MSG=number,first-last` | log every process that sends one of those Mach requests, and the answer it gets |
 | `COCAINE_CALLS=address,address` | log each call a PowerPC guest makes to one of those addresses, with its arguments |
 | `COCAINE_WATCH=address` | log each PowerPC store of a word to that address, and the code that made it |

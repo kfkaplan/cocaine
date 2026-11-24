@@ -19,6 +19,9 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
 - Virtual display mode switching is tracked only for the checked 10.5.6
   PowerPC CoreGraphics implementation. 8-bit modes and modes exceeding the
   window server's shared framebuffer are not supported.
+- The viewer follows the guest display, not an individual game's window.
+  Ghost Recon Demo's AGL drawable has no associated Carbon window, so it
+  must fall back to the display mode rather than a window's bounds.
 
 - Some Mach port rights are never released: rights that arrive with
   requests from other processes, IOKit's registry and iterator ports, and

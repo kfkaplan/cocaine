@@ -71,6 +71,12 @@ enable_testing()
 add_executable(display-pixels-test tests/display-pixels.cpp)
 target_include_directories(display-pixels-test PRIVATE src)
 add_test(NAME display-pixels COMMAND display-pixels-test)
+add_executable(viewer-resize-test tests/viewer-resize.mm)
+target_include_directories(viewer-resize-test PRIVATE src)
+set_source_files_properties(tests/viewer-resize.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+target_link_libraries(viewer-resize-test PRIVATE "-framework Cocoa" "-framework QuartzCore" "-framework CoreGraphics")
+add_test(NAME viewer-resize COMMAND viewer-resize-test)
+set_tests_properties(viewer-resize PROPERTIES SKIP_RETURN_CODE 77)
 # The ARM64 instruction encodings the PowerPC translator emits, against the
 # system's assembler.
 add_test(NAME arm64-encodings
