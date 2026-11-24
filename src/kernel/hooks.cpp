@@ -337,7 +337,7 @@ void Process::note_code_mapping(u32 at, u32 len, int fd, u64 offset) {
     u32 taken = 0;
     for (const auto& [name, addr] : img.exports) {
       auto it = mine.find(name);
-      if (pl ? name.compare(0, pl, lib->prefix) != 0 : it == mine.end()) continue;
+      if (it == mine.end() && (!pl || name.compare(0, pl, lib->prefix) != 0)) continue;
       const u32 where = addr + img.slide;
       if (where < at || where + 4 > at + len) continue;
       // The private mode record layout below is known only for this build.
@@ -573,7 +573,8 @@ u32 Process::call_guest_args(Thread& t, u32 fn, const std::vector<GuestArg>& arg
   PPCState& s = t.ppc;
   // A fresh frame well below the caller's, past the 224 bytes below the
   // stack pointer that a PowerPC function may use without moving it.
-  const u32 sp = (saved.gpr[1] - 1024) & ~15u;
+  const u32 extra = args.size() > 8 ? (u32)(args.size() - 8) * 4 : 0;
+  const u32 sp = (saved.gpr[1] - 1024 - extra) & ~15u;
   mem_.w32(sp, saved.gpr[1]);
   s.gpr[1] = sp;
   // Integers in r3 to r10; floats in f1 to f13, each still using up an
@@ -584,10 +585,11 @@ u32 Process::call_guest_args(Thread& t, u32 fn, const std::vector<GuestArg>& arg
       float v;
       memcpy(&v, &a.bits, 4);
       if (f < 13) s.fpr[1 + f++].d = v;
-      k++;
     } else if (k < 8) {
-      s.gpr[3 + k++] = a.bits;
+      s.gpr[3 + k] = a.bits;
     }
+    if (k >= 8) mem_.w32(sp + 24 + 4 * (u32)k, a.bits);
+    k++;
   }
   s.lr = kPPCGuestReturnAddr;
   s.pc = fn & ~3u;

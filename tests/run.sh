@@ -156,6 +156,32 @@ if [ -f "$root/usr/lib/dyld" ]; then
         cat "$log"
         fail=$((fail + 1))
       fi
+      log="$work/cgl-$arch.log"
+      actual=$(PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
+        "$root/usr/bin/python2.5" -c "$(cat "$here/guest/cgl.py")" 2>"$log")
+      status=$?
+      if [ "$status" -eq 0 ] && [ "$actual" = "CGL compatibility ok" ]; then
+        echo "ok    $arch CGL compatibility"
+        pass=$((pass + 1))
+      else
+        echo "FAIL  $arch CGL compatibility: $actual"
+        drop_noise "$log"
+        cat "$log"
+        fail=$((fail + 1))
+      fi
+      log="$work/midi-$arch.log"
+      actual=$(PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
+        "$root/usr/bin/python2.5" -c "$(cat "$here/guest/midi.py")" 2>"$log")
+      status=$?
+      if [ "$status" -eq 0 ] && [ "$actual" = "MIDI audio compatibility ok" ]; then
+        echo "ok    $arch MIDI audio compatibility"
+        pass=$((pass + 1))
+      else
+        echo "FAIL  $arch MIDI audio compatibility: $actual"
+        drop_noise "$log"
+        cat "$log"
+        fail=$((fail + 1))
+      fi
       log="$work/sysctl-$arch.log"
       actual=$(PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
         "$root/usr/bin/python2.5" -c "$(cat "$here/guest/sysctl.py")" 2>"$log")

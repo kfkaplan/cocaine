@@ -70,8 +70,9 @@ struct HookSpec {
 
 // A library whose functions are taken over: every exported function whose
 // name starts with `prefix` is, the ones in `specs` by those handlers and
-// the rest by one that says it isn't done yet and returns 0. An empty
-// prefix takes over the functions in `specs` and no others.
+// the rest by one that says it isn't done yet and returns 0. Explicit specs
+// are also taken over when their names don't start with the prefix. An empty
+// prefix takes over only the functions in `specs`.
 struct HookLibrary {
   const char* suffix;  // how the library's path ends
   const char* prefix;

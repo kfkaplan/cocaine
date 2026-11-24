@@ -202,7 +202,7 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   Apple Silicon Mac has, and run as guest code it finds no renderer at all:
   every call quietly does nothing (Marble Blast crashed several calls
   later, on a camera matrix OpenGL never filled in). So when a guest maps
-  the code of libGL, libGLU, AGL or an OpenAL framework (its own bundled copy
+  the code of libGL, libGLU, AGL, the CGL framework or an OpenAL framework (its own bundled copy
   counts), cocaine reads the library's exported symbols and writes a host
   call over the first instruction of each function it supplies
   (`src/kernel/hooks.cpp`). Whoever calls it, the game or another library,
@@ -233,7 +233,13 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   game window's own pixels, converting to RGB555 for a 16-bit QuickDraw
   pixmap, then marks the window changed and has the
   guest's QuickDraw flush it, the way a game that drew in software did. The
-  window server, the viewer and window moves then need nothing new. Those
+  window server, the viewer and window moves then need nothing new. Cocoa's
+  NSOpenGLView uses CGL instead: cocaine takes over CGL context creation,
+  connects the offscreen framebuffer to the window server's surface bounds,
+  and at `CGLFlushDrawable` draws the read-back pixels into the guest window
+  through its CoreGraphics window context. GL Golf uses this path and GLU's
+  quadrics, mipmaps, and perspective functions. CGL pixel format requests,
+  like AGL's, are not yet enforced. Those
   QuickDraw calls are guest functions, run from native code
   (`Process::call_guest`): a fresh stack frame, a return address that
   holds a "come back" host call, and the CPU loop run until it hits it.
@@ -256,7 +262,13 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   times the guest is told are what matters most: a sample's host time is
   when it will really be heard, measured on the guest's clock (which ticks
   in nanoseconds), from an anchor moved every turn. Get that wrong and VLC,
-  thinking every buffer late, plays silence.
+  thinking every buffer late, plays silence. Leopard's AudioFile reader
+  rejects MIDI files used by NSSound (for example GL Golf's music). When it
+  rejects a callback-backed MIDI file, `src/audio/midi.cpp` reads the
+  sequence with the Mac's MusicSequence, renders it on demand through the
+  Mac's DLS synthesizer, and gives the guest a seekable PCM WAVE through
+  AudioFile callbacks. NSSound still controls playback and looping; other
+  file types stay with Leopard's AudioFile reader.
 - **Calling on, and passing on.** Taking over works on Intel guests too:
   the host call is `int 0xFE` and its number, arguments come off the stack,
   and the function returns by popping its return address. A function taken

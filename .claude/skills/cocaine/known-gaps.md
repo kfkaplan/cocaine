@@ -26,10 +26,10 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   heavy system traffic.
 
 - OpenGL and OpenAL pass through for both CPUs, but only the
-  functions used by the games tested so far: much of OpenGL 1.x, some AGL
-  and GLU calls, and OpenAL 1.1's playback calls. Another game will want others, which
+  functions used by the games tested so far: much of OpenGL 1.x, some AGL,
+  CGL and GLU calls, and OpenAL 1.1's playback calls. Another game will want others, which
   announce themselves on the first call ("... is not passed through to the
-  Mac yet"). AGL pixel-format requests are logged but not enforced: the
+  Mac yet"). AGL and CGL pixel-format requests are logged but not enforced: the
   existing fixed accelerated format is used instead. Full screen
   (`aglSetFullScreen`) isn't done, so games have to
   be set to play in a window. DrawSprocket still runs as guest code and

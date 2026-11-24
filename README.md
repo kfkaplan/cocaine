@@ -18,8 +18,8 @@ The guest system's screen appears in a window on your Mac.
   The display is drawn at twice the pixels, so it looks sharp on a Retina
   screen.
 - **Games -** Marble Blast Gold (both halves of the universal build) plays at
-  60 frames a second with music and sound. OpenGL and OpenAL calls go to your
-  Mac's own graphics and sound.
+  60 frames a second with music and sound; GL Golf draws its course.
+  OpenGL and OpenAL calls go to your Mac's own graphics and sound.
 - **Sound -** VLC plays MP3s through your Mac's speakers.
 - **Command line tools, shells and scripting languages -** from Leopard -
   `ls`, `bash`, `zsh`, Python 2.5, Perl, Ruby and the rest.

@@ -45,6 +45,7 @@ add_executable(cocaine
   src/gl/gl.cpp
   src/al/al.cpp
   src/audio/coreaudio.cpp
+  src/audio/midi.cpp
 )
 
 target_include_directories(cocaine PRIVATE src)

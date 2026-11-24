@@ -35,6 +35,7 @@
 
 #include "kernel/hooks.h"
 #include "kernel/process.h"
+#include "audio/midi.h"
 
 namespace {
 
@@ -1178,6 +1179,10 @@ const HookSpec kUnits[] = {
     {"AudioUnitAddRenderNotify", unit_listener, true},
     {"AudioUnitRemoveRenderNotify", unit_listener, true},
 };
+const HookSpec kAudioFiles[] = {
+    {"AudioFileOpenWithCallbacks", midi_audio_file_open, true},
+    {"AudioFileClose", midi_audio_file_close, true},
+};
 #undef K
 const HookSpec kAudio[] = {
     H(AudioHardwareGetPropertyInfo),
@@ -1224,6 +1229,7 @@ const HookLibrary kLibraries[] = {
     {"/CoreAudio.framework/Versions/A/CoreAudio", "", kAudio, sizeof kAudio / sizeof kAudio[0], true},
     {"/AudioUnit.framework/Versions/A/AudioUnit", "", kUnits, sizeof kUnits / sizeof kUnits[0], true},
     {"/CarbonCore.framework/Versions/A/CarbonCore", "", kComponents, sizeof kComponents / sizeof kComponents[0], true},
+    {"/AudioToolbox.framework/Versions/A/AudioToolbox", "", kAudioFiles, sizeof kAudioFiles / sizeof kAudioFiles[0], true},
 };
 
 }  // namespace
