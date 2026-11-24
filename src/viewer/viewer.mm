@@ -288,7 +288,7 @@ int run_viewer(const char* path) {
     view.layer = [CALayer layer];  // a layer of the view's own, which AppKit then leaves alone
     view.wantsLayer = YES;
     view.layer.contentsGravity = kCAGravityResize;
-    view.layer.magnificationFilter = kCAFilterLinear;
+    view.layer.magnificationFilter = pixelScale == 2 ? kCAFilterNearest : kCAFilterLinear;
     view.layer.minificationFilter = kCAFilterTrilinear;
     view.layer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
     window.contentView = view;

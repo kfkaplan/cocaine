@@ -27,5 +27,26 @@ int main() {
   if (!configure({"/Library/Frameworks/SDL.framework/Versions/A/SDL"}, "1")) return 1;
   if (setenv(name, "2", 1) != 0) return 1;
   if (!configure({"@executable_path/libSDL-1.2.0.dylib"}, "2")) return 1;
+  const char* display = "COCAINE_DISPLAY";
+  const char* viewer = "COCAINE_VIEWER_DOUBLE";
+  if (unsetenv(name) != 0 || unsetenv(display) != 0 || unsetenv(viewer) != 0) return 1;
+  auto postal = [&] {
+    if (configure_legacy_ui_scale({"@executable_path/libSDL-1.2.0.dylib"}, error,
+                                  "com.runningwithscissors.postal2")) return true;
+    std::fprintf(stderr, "%s\n", error.c_str());
+    return false;
+  };
+  if (!configure({"@executable_path/libSDL-1.2.0.dylib"}, "1") ||
+      getenv(display) || getenv(viewer)) return 1;
+  if (!postal() || strcmp(getenv(display), "1024x768") != 0 ||
+      strcmp(getenv(viewer), "1") != 0 || strcmp(getenv(name), "1") != 0) return 1;
+  if (setenv(display, "1280x1024", 1) != 0 || setenv(viewer, "0", 1) != 0 ||
+      setenv(name, "2", 1) != 0) return 1;
+  if (!postal() || strcmp(getenv(display), "1280x1024") != 0 ||
+      strcmp(getenv(viewer), "0") != 0 || strcmp(getenv(name), "2") != 0) return 1;
+  if (unsetenv(display) != 0 || unsetenv(viewer) != 0) return 1;
+  if (!configure_legacy_ui_scale({"@executable_path/libSDL2-2.0.0.dylib"}, error,
+                                 "com.runningwithscissors.postal2") ||
+      getenv(display) || getenv(viewer)) return 1;
   return 0;
 }

@@ -1297,7 +1297,21 @@ int written(const T* v, T marker) {
 GLenum guest_buffer(GLenum b) { return b == GL_COLOR_ATTACHMENT0_EXT ? GL_BACK : b; }
 void glGetIntegerv_(GuestCall& c) {
   const GLenum p = c.i();
-  u8* out = gp(c, c.i());
+  const u32 address = c.i();
+  u8* out = gp(c, address);
+  if (p == GL_COMPRESSED_TEXTURE_FORMATS) {
+    GLint count = 0;
+    glGetIntegerv(GL_NUM_COMPRESSED_TEXTURE_FORMATS, &count);
+    if (count <= 0) return;
+    if (!address || !c.mem.range_ok(address, (u64)count * 4, GuestMemory::kWrite)) {
+      log_warn("OpenGL: invalid compressed texture format result");
+      return;
+    }
+    std::vector<GLint> formats((size_t)count);
+    glGetIntegerv(p, formats.data());
+    for (GLint k = 0; k < count; k++) wr32(out + 4 * k, (u32)formats[(size_t)k]);
+    return;
+  }
   GLint v[16];
   const GLint marker = 0x7A5A7A5A;
   for (GLint& x : v) x = marker;
@@ -1350,6 +1364,7 @@ const char* const kExtensions[] = {
     "GL_ARB_texture_border_clamp", "GL_EXT_texture_edge_clamp", "GL_SGIS_texture_edge_clamp", "GL_EXT_stencil_wrap",
     "GL_ARB_texture_cube_map", "GL_EXT_separate_specular_color", "GL_EXT_packed_pixels", "GL_APPLE_packed_pixels",
     "GL_EXT_texture_lod_bias", "GL_EXT_rescale_normal", "GL_ARB_texture_non_power_of_two",
+    "GL_ARB_texture_compression", "GL_EXT_texture_compression_s3tc",
 };
 void glGetString_(GuestCall& c) {
   const GLenum name = c.i();
@@ -1696,6 +1711,103 @@ void glTexSubImage2D_(GuestCall& c) {
   const u32 pixels = c.i();
   glTexSubImage2D(target, level, x, y, w, h, format, type, gp(c, pixels));
 }
+bool compressed_data_valid(GuestCall& c, u32 pixels, GLsizei size, bool allow_null = true) {
+  if (size > 0 && ((!pixels && !allow_null) ||
+                   (pixels && !c.mem.range_ok(pixels, (u32)size, GuestMemory::kRead)))) {
+    log_warn("OpenGL: invalid compressed texture data");
+    return false;
+  }
+  return true;
+}
+// Compressed blocks have a fixed byte layout, independent of the guest CPU.
+void glCompressedTexImage1D_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i();
+  const GLenum format = c.i();
+  const GLsizei width = (GLsizei)c.i();
+  const GLint border = (GLint)c.i();
+  const GLsizei size = (GLsizei)c.i();
+  const u32 pixels = c.i();
+  if (compressed_data_valid(c, pixels, size))
+    glCompressedTexImage1D(target, level, format, width, border, size, gp(c, pixels));
+}
+void glCompressedTexImage2D_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i();
+  const GLenum format = c.i();
+  const GLsizei width = (GLsizei)c.i(), height = (GLsizei)c.i();
+  const GLint border = (GLint)c.i();
+  const GLsizei size = (GLsizei)c.i();
+  const u32 pixels = c.i();
+  if (compressed_data_valid(c, pixels, size))
+    glCompressedTexImage2D(target, level, format, width, height, border, size, gp(c, pixels));
+}
+void glCompressedTexImage3D_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i();
+  const GLenum format = c.i();
+  const GLsizei width = (GLsizei)c.i(), height = (GLsizei)c.i(), depth = (GLsizei)c.i();
+  const GLint border = (GLint)c.i();
+  const GLsizei size = (GLsizei)c.i();
+  const u32 pixels = c.i();
+  if (compressed_data_valid(c, pixels, size))
+    glCompressedTexImage3D(target, level, format, width, height, depth, border, size, gp(c, pixels));
+}
+void glCompressedTexSubImage1D_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i(), x = (GLint)c.i();
+  const GLsizei width = (GLsizei)c.i();
+  const GLenum format = c.i();
+  const GLsizei size = (GLsizei)c.i();
+  const u32 pixels = c.i();
+  if (compressed_data_valid(c, pixels, size, false))
+    glCompressedTexSubImage1D(target, level, x, width, format, size, gp(c, pixels));
+}
+void glCompressedTexSubImage2D_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i(), x = (GLint)c.i(), y = (GLint)c.i();
+  const GLsizei width = (GLsizei)c.i(), height = (GLsizei)c.i();
+  const GLenum format = c.i();
+  const GLsizei size = (GLsizei)c.i();
+  const u32 pixels = c.i();
+  if (compressed_data_valid(c, pixels, size, false))
+    glCompressedTexSubImage2D(target, level, x, y, width, height, format, size, gp(c, pixels));
+}
+void glCompressedTexSubImage3D_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i(), x = (GLint)c.i(), y = (GLint)c.i(), z = (GLint)c.i();
+  const GLsizei width = (GLsizei)c.i(), height = (GLsizei)c.i(), depth = (GLsizei)c.i();
+  const GLenum format = c.i();
+  const GLsizei size = (GLsizei)c.i();
+  const u32 pixels = c.i();
+  if (compressed_data_valid(c, pixels, size, false))
+    glCompressedTexSubImage3D(target, level, x, y, z, width, height, depth, format, size, gp(c, pixels));
+}
+void glGetTexLevelParameteriv_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i();
+  const GLenum parameter = c.i();
+  const u32 out = c.i();
+  if (!out || !c.mem.range_ok(out, 4, GuestMemory::kWrite)) {
+    log_warn("OpenGL: invalid texture level result");
+    return;
+  }
+  GLint value = 0;
+  glGetTexLevelParameteriv(target, level, parameter, &value);
+  wr32(gp(c, out), (u32)value);
+}
+void glGetCompressedTexImage_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i();
+  const u32 pixels = c.i();
+  GLint size = 0;
+  glGetTexLevelParameteriv(target, level, GL_TEXTURE_COMPRESSED_IMAGE_SIZE, &size);
+  if (size > 0 && (!pixels || !c.mem.range_ok(pixels, (u32)size, GuestMemory::kWrite))) {
+    log_warn("OpenGL: invalid compressed texture result");
+    return;
+  }
+  glGetCompressedTexImage(target, level, gp(c, pixels));
+}
 void glReadPixels_(GuestCall& c) {
   const GLint x = (GLint)c.i(), y = (GLint)c.i();
   const GLsizei w = (GLsizei)c.i(), h = (GLsizei)c.i();
@@ -1910,6 +2022,16 @@ const HookSpec kGL[] = {
     H(glTexEnvf), H(glTexEnvi), H(glTexEnvfv), H(glGetTexEnviv), H(glTexGeni), H(glTexGenfv), H(glGenTextures),
     H(glDeleteTextures), H(glBindTexture), H(glTexParameteri), H(glTexParameterf), H(glTexImage2D),
     H(glTexSubImage2D), H(glReadPixels), H(glActiveTextureARB), H(glVertexPointer), H(glNormalPointer),
+    H(glCompressedTexImage1D), H(glCompressedTexImage2D), H(glCompressedTexImage3D),
+    H(glCompressedTexSubImage1D), H(glCompressedTexSubImage2D), H(glCompressedTexSubImage3D),
+    H(glGetCompressedTexImage), H(glGetTexLevelParameteriv),
+    {"glCompressedTexImage1DARB", glCompressedTexImage1D_},
+    {"glCompressedTexImage2DARB", glCompressedTexImage2D_},
+    {"glCompressedTexImage3DARB", glCompressedTexImage3D_},
+    {"glCompressedTexSubImage1DARB", glCompressedTexSubImage1D_},
+    {"glCompressedTexSubImage2DARB", glCompressedTexSubImage2D_},
+    {"glCompressedTexSubImage3DARB", glCompressedTexSubImage3D_},
+    {"glGetCompressedTexImageARB", glGetCompressedTexImage_},
     H(glColorPointer), H(glTexCoordPointer), H(glEnableClientState), H(glDisableClientState),
     H(glClientActiveTextureARB), H(glDrawArrays), H(glDrawElements), H(glDrawRangeElements),
     {"glDrawRangeElementsEXT", glDrawRangeElements_}, H(glArrayElement), H(glLockArraysEXT),

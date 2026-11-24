@@ -19,7 +19,9 @@ The guest system's screen appears in a window on your Mac.
   screen.
 - **Games -** Marble Blast Gold (both halves of the universal build) plays at
   60 frames a second with music and sound; GL Golf draws its course.
-  Postal 2 draws its startup warning, animated intro and menu.
+  Postal 2 draws its startup warning, animated intro and menu, using a
+  1024 x 768 display with doubled viewer pixels where they fit. Compressed
+  font textures keep their full resolution.
   OpenGL and OpenAL calls go to your Mac's own graphics and sound.
 - **Sound -** VLC plays MP3s through your Mac's speakers.
 - **Mounted disk images -** browsable images mounted under `/Volumes` are

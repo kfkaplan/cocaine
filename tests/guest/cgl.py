@@ -111,6 +111,72 @@ pixel = (ctypes.c_ubyte * 4)()
 gl.glReadPixels(0, 0, 1, 1, 0x1908, 0x1401, pixel)
 assert tuple(pixel) == (255, 0, 0, 255), tuple(pixel)
 
+gl.glGetString.argtypes = [uint]
+gl.glGetString.restype = ctypes.c_char_p
+extensions = gl.glGetString(0x1f03).split()
+assert "GL_ARB_texture_compression" in extensions
+assert "GL_EXT_texture_compression_s3tc" in extensions
+gl.glGetIntegerv(0x86a2, ctypes.byref(value))
+assert value.value > 0
+formats = (ctypes.c_int * value.value)()
+gl.glGetIntegerv(0x86a3, formats)
+assert all(format in formats for format in (0x83f0, 0x83f2, 0x83f3)), tuple(formats)
+gl.glGenTextures.argtypes = [ctypes.c_int, uintp]
+gl.glBindTexture.argtypes = [uint, uint]
+gl.glTexParameteri.argtypes = [uint, uint, ctypes.c_int]
+gl.glGetTexLevelParameteriv.argtypes = [uint, ctypes.c_int, uint, intp]
+gl.glTexCoord2f.argtypes = [ctypes.c_float] * 2
+gl.glVertex2f.argtypes = [ctypes.c_float] * 2
+for suffix in ("", "ARB"):
+    getattr(gl, "glCompressedTexImage2D" + suffix).argtypes = [
+        uint, ctypes.c_int, uint] + [ctypes.c_int] * 4 + [ctypes.c_void_p]
+    getattr(gl, "glCompressedTexSubImage2D" + suffix).argtypes = [
+        uint] + [ctypes.c_int] * 5 + [uint, ctypes.c_int, ctypes.c_void_p]
+    getattr(gl, "glGetCompressedTexImage" + suffix).argtypes = [uint, ctypes.c_int, ctypes.c_void_p]
+texture_name = uint()
+gl.glGenTextures(1, ctypes.byref(texture_name))
+gl.glBindTexture(0x0de1, texture_name)
+gl.glTexParameteri(0x0de1, 0x2801, 0x2600)
+gl.glTexParameteri(0x0de1, 0x2800, 0x2600)
+gl.glMatrixMode(0x1701)
+gl.glLoadIdentity()
+gl.glMatrixMode(0x1700)
+gl.glLoadIdentity()
+gl.glViewport(0, 0, 1, 1)
+gl.glEnable(0x0de1)
+gl.glColor4f(1, 1, 1, 1)
+
+def textured_pixel():
+    gl.glBegin(7)
+    for x, y, u, v in ((-1, -1, 0, 0), (1, -1, 1, 0), (1, 1, 1, 1), (-1, 1, 0, 1)):
+        gl.glTexCoord2f(u, v)
+        gl.glVertex2f(x, y)
+    gl.glEnd()
+    gl.glReadPixels(0, 0, 1, 1, 0x1908, 0x1401, pixel)
+    return tuple(pixel)
+
+red_block = "\x00\xf8\x1f\x00\x00\x00\x00\x00"
+for suffix in ("", "ARB"):
+    for format, block, alpha in ((0x83f1, red_block, 255),
+                                 (0x83f2, "\xff" * 8 + red_block, 255),
+                                 (0x83f3, "\x80" + "\x00" * 7 + red_block, 128)):
+        getattr(gl, "glCompressedTexImage2D" + suffix)(0x0de1, 0, format, 4, 4, 0, len(block), ctypes.c_char_p(block))
+        assert gl.glGetError() == 0
+        gl.glGetTexLevelParameteriv(0x0de1, 0, 0x1000, ctypes.byref(value))
+        assert value.value == 4, value.value
+        gl.glGetTexLevelParameteriv(0x0de1, 0, 0x86a0, ctypes.byref(value))
+        assert value.value == len(block), value.value
+        copied = ctypes.create_string_buffer(len(block))
+        getattr(gl, "glGetCompressedTexImage" + suffix)(0x0de1, 0, copied)
+        assert copied.raw == block, repr(copied.raw)
+        assert textured_pixel() == (255, 0, 0, alpha), tuple(pixel)
+    blue_block = "\xff" + "\x00" * 7 + "\x1f\x00\x00\xf8" + "\x00" * 4
+    getattr(gl, "glCompressedTexSubImage2D" + suffix)(0x0de1, 0, 0, 0, 4, 4, 0x83f3, len(blue_block), ctypes.c_char_p(blue_block))
+    assert gl.glGetError() == 0
+    assert textured_pixel() == (0, 0, 255, 255), tuple(pixel)
+gl.glDisable(0x0de1)
+gl.glBindTexture(0x0de1, 0)
+
 cg = ctypes.CDLL("/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics")
 cg.CGMainDisplayID.restype = uint
 cg.CGDisplayIDToOpenGLDisplayMask.argtypes = [uint]

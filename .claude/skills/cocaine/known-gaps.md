@@ -55,7 +55,9 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   as it did before, only bigger. Dynamically linked SDL 1.2 games default to
   1x too: their QuickDraw driver mixes point and pixel coordinates at 2x,
   which can leave software windows blank. Forcing COCAINE_UI_SCALE=2 can
-  bring this back; the default fixes Postal 2's startup warning.
+  bring this back; the default fixes Postal 2's startup warning. Postal 2
+  uses a smaller 1024x768 guest display and doubles pixels in the viewer
+  instead, enlarging the menu without enabling that broken drawing mode.
 - A default button's blue pulse stutters at the usual 2560 x 1600: measured
   on 2026-11-20 in VLC's Open Source dialog (PowerPC), the button gets a
   new picture about twice a second, in step with the text cursor's blink,

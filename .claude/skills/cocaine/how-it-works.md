@@ -251,14 +251,25 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   no host display is captured or switched. Postal 2 uses this path, together
   with scissor clipping, color material and range-indexed drawing (which
   shares the ordinary indexed draw's guest-array conversion).
+  ARB texture compression and S3TC are offered when the host supports them.
+  Compressed uploads, updates and readback use the core and ARB entry points;
+  their blocks have a fixed byte layout and are not swapped for PowerPC.
+  Without S3TC, Postal 2's renderer skips the highest mip of compressed
+  textures even for fonts: its 256x256 DXT5 font atlases became 128x128.
+  Passing compression through preserves their full source resolution.
   Before starting guest code, programs linked to SDL 1.2 get a default
   `COCAINE_UI_SCALE=1`. SDL's old QuickDraw driver locates its software
   pixels by subtracting a view's point frame from its window's pixel frame.
   At 2x that puts Postal 2's warning bitmap 385 rows into the backing store,
   while its flush covers the first 384 rows: a blank part of the window.
   Keeping these programs at 1x makes the coordinates agree, without changing
-  their OpenGL display modes or other programs' usual scaling. An explicit
-  `COCAINE_UI_SCALE` still takes precedence.
+  other programs' usual scaling. Postal 2 defaults to a 1024x768 guest display
+  and doubled viewer pixels instead of Leopard's unfinished 2x drawing:
+  its menu is larger without breaking the software warning screen. This
+  applies to both bundle and executable launches, including the launcher.
+  The viewer uses nearest-neighbor magnification when doubling, so it does
+  not blend neighboring pixels. Explicit `COCAINE_UI_SCALE`,
+  `COCAINE_DISPLAY` and `COCAINE_VIEWER_DOUBLE` still take precedence.
   CGL pixel format requests,
   like AGL's, are not yet enforced. Those
   QuickDraw calls are guest functions, run from native code
