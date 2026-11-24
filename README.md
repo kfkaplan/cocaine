@@ -21,6 +21,8 @@ The guest system's screen appears in a window on your Mac.
   60 frames a second with music and sound; GL Golf draws its course.
   OpenGL and OpenAL calls go to your Mac's own graphics and sound.
 - **Sound -** VLC plays MP3s through your Mac's speakers.
+- **Mounted disk images -** browsable images mounted under `/Volumes` are
+  visible to guests, including to installers that look for a CD.
 - **Command line tools, shells and scripting languages -** from Leopard -
   `ls`, `bash`, `zsh`, Python 2.5, Perl, Ruby and the rest.
 
@@ -103,8 +105,10 @@ export COCAINE_SYSROOT=$PWD/sysroots/10.5
 </details>
 
 A window titled "cocaine: Mac OS X 10.5" opens after a few seconds, once
-Leopard's window server and login window have started. To run an app from a
-disk image, open the image on your Mac and copy the `.app` out.
+Leopard's window server and login window have started. For an installer that
+asks for a CD, mount its disk image on your Mac before running the installer.
+Mount the image containing the Mac installer and its files; a different disc
+or a Windows-only disc may not contain what the installer needs.
 
 <details>
 <summary>Environment variables</summary>

@@ -84,6 +84,11 @@ keys for the Intel system programs aren't there, the Intel one must instead
 get as far as it can: through Launch Services to asking for the window
 server.
 
+The volume test always checks the guest root. To exercise a mounted disk
+image too, set `COCAINE_TEST_VOLUME` to its `/Volumes/...` mount point before
+running the suite. Optionally set `COCAINE_TEST_VOLUME_MARKER` to a file
+relative to that mount; the test checks it through both the mount and `/.vol`.
+
 The built guest programs live in `tests/bin/`, so running the tests needs
 nothing extra. Rebuilding them after an edit needs Homebrew LLVM for the
 PowerPC half: `sh tests/build-guest.sh`.

@@ -78,8 +78,12 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   AppleDouble sidecars supply missing Finder metadata and read-only resource
   forks without changing the imported files. Parent IDs for immediate system
   root children use the guest volume root ID so Carbon can build paths.
-  Volume enumeration and Carbon's `/.vol/<device>/@` reference use the
-  imported root's backing volume, including its actual read-only status.
+  Volume enumeration uses the imported root's backing volume, including its
+  actual read-only status, and adds browsable host mounts under `/Volumes`.
+  Carbon's `/.vol/<device>/@` and root folder ID 2 resolve those mounts.
+  IOKit identifies mounted disk images and optical media by BSD device name
+  and presents a minimal CD media ancestor with the `Whole` property, for
+  installers that check for a disc. This does not emulate disc commands.
 - **Fake kernel.** `src/kernel` stands in for what sits underneath those
   libraries:
   - BSD system calls. The host is Darwin too, so most map onto the same host

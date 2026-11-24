@@ -880,22 +880,46 @@ SysRet Process::bsd_syscall(Thread& t, u32 num, SysArgs& a) {
       break;
     }
     case 18:
-    case 347: {  // getfsstat, getfsstat64: the mounted volumes. One, as far as the guest knows.
+    case 347: {  // getfsstat, getfsstat64
       const u32 buf = a.u(), size = a.u();
+      const int flags = a.i();
       struct statfs fs;
-      // The one enumerated volume is the imported root's backing volume,
-      // not necessarily the host's read-only system volume.
       const char* root = opt_.sysroot.empty() ? "/" : opt_.sysroot.c_str();
       if (statfs(root, &fs) != 0) {
         r = SysRet::err(errno);
-      } else if (!buf) {
-        r = SysRet::ok(1);
-      } else if (size < (num == 347 ? 2168u : 272u)) {
-        r = SysRet::ok(0);
       } else {
+        std::vector<struct statfs> mounts;
+        const int error = mounted_volumes(mounts, flags);
+        if (error) {
+          r = SysRet::err(error);
+          break;
+        }
+        std::vector<struct statfs> visible;
         strlcpy(fs.f_mntonname, "/", sizeof fs.f_mntonname);
-        r = sys_statfs(fs, buf, num == 347);
-        if (r.kind == SysRet::Value) r = SysRet::ok(1);
+        visible.push_back(fs);
+        for (const struct statfs& mount : mounts) {
+          if (mount.f_fsid.val[0] == fs.f_fsid.val[0] && mount.f_fsid.val[1] == fs.f_fsid.val[1])
+            continue;
+          visible.push_back(mount);
+        }
+        if (!buf) {
+          r = SysRet::ok((u32)visible.size());
+          break;
+        }
+        const u32 entry_size = num == 347 ? 2168u : 272u;
+        const u32 n = std::min<u32>(size / entry_size, (u32)visible.size());
+        if (n && !mem_.range_ok(buf, n * entry_size)) {
+          r = SysRet::err(EFAULT);
+          break;
+        }
+        r = SysRet::ok(n);
+        for (u32 i = 0; i < n; i++) {
+          const SysRet written = sys_statfs(visible[i], buf + i * entry_size, num == 347);
+          if (written.kind != SysRet::Value) {
+            r = written;
+            break;
+          }
+        }
       }
       break;
     }

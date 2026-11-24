@@ -1,15 +1,17 @@
 // A sliver of IOKit: the registry of devices and drivers.
 //
 // Programs reach IOKit through the "master" port and get further ports for
-// the registry entries, iterators and connections they ask for. There are no
-// devices here, so nearly every search comes back empty. The one thing that
-// exists is the power-management root, because long-running programs (every
-// system daemon, any app with a run loop) register with it to hear about
-// sleep and wake, and some treat failing to as fatal. Nothing is ever
-// announced: this machine, as far as the guest can tell, never sleeps.
+// the registry entries, iterators and connections they ask for. Most device
+// searches come back empty. The power-management root exists because
+// long-running programs (every system daemon, any app with a run loop)
+// register with it to hear about sleep and wake, and some treat failure as
+// fatal. Nothing is ever announced: the guest never sleeps.
 
 #include <algorithm>
+#include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/IOKitLib.h>
 #include <mach/mach.h>
+#include <sys/mount.h>
 
 #include <set>
 #include <ctime>
@@ -38,6 +40,8 @@ enum : u32 {
   kRegistryRoot,
   kHIDSystem,      // the input system: keyboards and mice, as one event queue
   kHIDConnection,
+  kMountedMedia,
+  kOpticalMedia,
 };
 
 // The input system's shared memory, laid out as Mac OS X 10.5 has it: two
@@ -69,6 +73,69 @@ enum : u32 {
   kKeyDown = 10, kKeyUp = 11, kModifiersChanged = 12, kScrollWheel = 22,
 };
 constexpr u32 kEvQueue = kEvGlobals + 224, kEvQueueLength = 240;  // each slot is 96 bytes
+
+bool mounted_optical_image(const std::string& bsd) {
+  std::vector<struct statfs> mounts;
+  const int error = mounted_volumes(mounts, MNT_NOWAIT);
+  if (error) {
+    log_warn("cannot list mounted volumes: %s", strerror(error));
+    return false;
+  }
+  bool mounted = false;
+  for (const struct statfs& fs : mounts) {
+    if (std::string(fs.f_mntfromname) == "/dev/" + bsd) {
+      mounted = true;
+      break;
+    }
+  }
+  if (!mounted) return false;
+  io_service_t media = IOServiceGetMatchingService(kIOMainPortDefault,
+                                                   IOBSDNameMatching(kIOMainPortDefault, 0, bsd.c_str()));
+  if (!media) {
+    log_warn("cannot find IOKit media for mounted volume %s", bsd.c_str());
+    return false;
+  }
+  bool optical = IOObjectConformsTo(media, "IOCDMedia") || IOObjectConformsTo(media, "IODVDMedia");
+  io_iterator_t parents = IO_OBJECT_NULL;
+  const kern_return_t result = IORegistryEntryCreateIterator(
+      media, kIOServicePlane, kIORegistryIterateRecursively | kIORegistryIterateParents, &parents);
+  if (result != KERN_SUCCESS) {
+    log_warn("cannot inspect mounted media %s: 0x%x", bsd.c_str(), result);
+  } else {
+    io_object_t entry;
+    while ((entry = IOIteratorNext(parents))) {
+      optical |= IOObjectConformsTo(entry, "AppleDiskImageDevice") ||
+                 IOObjectConformsTo(entry, "IOCDMedia") || IOObjectConformsTo(entry, "IODVDMedia");
+      IOObjectRelease(entry);
+    }
+    IOObjectRelease(parents);
+  }
+  IOObjectRelease(media);
+  return optical;
+}
+
+std::string matching_bsd_name(const std::string& xml) {
+  CFDataRef data = CFDataCreate(kCFAllocatorDefault, (const UInt8*)xml.data(), (CFIndex)xml.size());
+  if (!data) return "";
+  CFPropertyListRef plist = CFPropertyListCreateWithData(kCFAllocatorDefault, data,
+                                                          kCFPropertyListImmutable, nullptr, nullptr);
+  CFRelease(data);
+  std::string result;
+  if (plist && CFGetTypeID(plist) == CFDictionaryGetTypeID() &&
+      CFDictionaryGetCount((CFDictionaryRef)plist) == 1) {
+    CFTypeRef properties = CFDictionaryGetValue((CFDictionaryRef)plist, CFSTR("IOPropertyMatch"));
+    if (properties && CFGetTypeID(properties) == CFDictionaryGetTypeID() &&
+        CFDictionaryGetCount((CFDictionaryRef)properties) == 1) {
+      CFTypeRef name = CFDictionaryGetValue((CFDictionaryRef)properties, CFSTR("BSD Name"));
+      char bsd[128];
+      if (name && CFGetTypeID(name) == CFStringGetTypeID() &&
+          CFStringGetCString((CFStringRef)name, bsd, sizeof bsd, kCFStringEncodingUTF8))
+        result = bsd;
+    }
+  }
+  if (plist) CFRelease(plist);
+  return result;
+}
 
 }  // namespace
 
@@ -118,6 +185,7 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
       made = new_kport(KObject::IOObject);
       kports_[made].io = kIterator;
       kports_[made].item = item;
+      kports_[made].initial_item = item;
     }
     give_send(made);
     Message m(be, local, id + 100, true);
@@ -133,6 +201,8 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
     case 2800: {  // io_object_get_class
       const char* cls = port.io == kPowerRoot  ? "IOPMrootDomain"
                         : port.io == kHIDSystem ? "IOHIDSystem"
+                        : port.io == kOpticalMedia ? "IOCDMedia"
+                        : port.io == kMountedMedia ? "IOMedia"
                                                 : "IOService";
       Message m(be, local, id + 100);
       m.ndr();
@@ -147,6 +217,19 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
         memcpy(&v, word, 4);
         m.put(be ? __builtin_bswap32(v) : v);  // put() swaps back: the bytes go out in order
       }
+      reply = m.finish();
+      return true;
+    }
+    case 2801: {  // io_object_conforms_to
+      const std::string cls = string_at(32);
+      const bool media = port.io == kMountedMedia || port.io == kOpticalMedia;
+      if (!media) return false;
+      const bool conforms = cls == "IOMedia" || cls == "IOService" ||
+                            (port.io == kOpticalMedia && cls == "IOCDMedia");
+      Message m(be, local, id + 100);
+      m.ndr();
+      m.put(KERN_SUCCESS);
+      m.put(conforms ? 1 : 0);
       reply = m.finish();
       return true;
     }
@@ -275,19 +358,63 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
       reply = m.finish();
       return true;
     }
-    case 2803:  // io_iterator_reset
+    case 2803: {  // io_iterator_reset
+      std::lock_guard<std::mutex> lk(kmu_);
+      const auto it = kports_.find(name);
+      if (it != kports_.end()) it->second.item = it->second.initial_item;
+      return code(KERN_SUCCESS);
+    }
     case 2816:  // io_service_close
       return code(KERN_SUCCESS);
     case 2804: {  // io_service_get_matching_services(what to match) -> iterator
-      // Nothing matches. What was wanted is noted (with -v), as the list of
-      // devices programs expect to find.
+      // Other searches are noted (with -v), as the list of devices programs expect.
       const std::string what = string_at(32);
+      const std::string bsd = matching_bsd_name(what);
+      if (!bsd.empty() && mounted_optical_image(bsd)) return iterator(kMountedMedia);
       static std::set<std::string> seen;
       static std::mutex seen_mu;
       std::lock_guard<std::mutex> lk(seen_mu);
       if (what.find(">IOHIDSystem<") != std::string::npos) return iterator(kHIDSystem);
       if (seen.insert(what).second) log_info("a program searched IOKit for %s", what.c_str());
       return iterator(0);
+    }
+    case 2833: {  // io_registry_entry_create_iterator
+      const u32 n = size >= 40 ? mem_.r32(msg + 36) : 0;
+      const u32 options_at = 40 + ((n + 3) & ~3u);
+      if (port.io == kMountedMedia && size >= 40 && n <= size - 40 && options_at + 4 <= size &&
+          string_at(32) == "IOService" && mem_.r32(msg + options_at) == 3)
+        return iterator(kOpticalMedia);
+      return code(kUnsupported);
+    }
+    case 2835: {  // io_make_matching: Leopard's IOBSDNameMatching
+      if (size < 45 || mem_.r32(msg + 32) != 101) return code(kUnsupported);
+      const u32 n = mem_.r32(msg + 40);
+      if (!n || n > size - 44 || n > 127) return code(kUnsupported);
+      std::string bsd;
+      for (u32 i = 0; i < n && mem_.r8(msg + 44 + i); i++) {
+        const char c = (char)mem_.r8(msg + 44 + i);
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+              (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == '.'))
+          return code(kUnsupported);
+        bsd += c;
+      }
+      if (bsd.empty()) return code(kUnsupported);
+      const std::string xml = "<dict><key>IOPropertyMatch</key><dict><key>BSD Name</key><string>" +
+                              bsd + "</string></dict></dict>";
+      Message m(be, local, id + 100);
+      m.ndr();
+      m.put(KERN_SUCCESS);
+      m.put(0);
+      m.put((u32)xml.size() + 1);
+      for (size_t i = 0; i <= xml.size(); i += 4) {
+        u8 bytes[4] = {};
+        for (size_t j = 0; j < 4 && i + j < xml.size(); j++) bytes[j] = (u8)xml[i + j];
+        u32 word;
+        memcpy(&word, bytes, 4);
+        m.put(be ? __builtin_bswap32(word) : word);
+      }
+      reply = m.finish();
+      return true;
     }
     case 2809: {  // io_registry_entry_from_path(path) -> entry
       const std::string path = string_at(32);
@@ -324,10 +451,24 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
       return object(kNotification);
     case 2851:  // io_service_acknowledge_notification
       return code(KERN_SUCCESS);
-    case 2805:  // io_registry_entry_get_property(name) -> value
-      // No object here has properties to give (the menu bar asks the root
-      // for IOConsoleUsers, the login sessions, each time a menu opens).
+    case 2805: {  // io_registry_entry_get_property(name) -> value
+      if (port.io == kOpticalMedia && string_at(32) == "Whole") {
+        const char value[] = "<true/>";
+        const u32 at = mem_.find_free(0x1000, 0x1000, 0xC0000000u);
+        if (!at || !mem_.map(at, 0x1000, GuestMemory::kRead | GuestMemory::kWrite))
+          return code(KERN_NO_SPACE);
+        memcpy(mem_.host(at), value, sizeof value);
+        Message m(be, local, id + 100, true);
+        m.put(1);
+        m.ool_data(at, sizeof value);
+        m.ndr();
+        m.put(sizeof value);
+        reply = m.finish();
+        return true;
+      }
+      // The menu bar also asks the root for IOConsoleUsers, the login sessions.
       return code(kNotFound);
+    }
   }
   (void)name;
   return false;

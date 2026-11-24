@@ -73,7 +73,10 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
 - IOKit has almost no devices: most searches come back empty. There is a
   power-management root that never announces sleep or wake, and an input
   system with one mouse and one keyboard's worth of events, fed from the
-  viewer. No display device: the window server makes do with a virtual one.
+  viewer. Mounted disk images and optical media have only the minimal CD
+  registry entries needed for detection; raw disc commands, eject and media
+  notifications are not emulated. No display device: the window server makes
+  do with a virtual one.
 - The guest's display is one fixed window holding everything (2560 x 1600 unless
   `COCAINE_DISPLAY` says otherwise),
   with no pointer of its own drawn on it. Nobody is logged in to the guest

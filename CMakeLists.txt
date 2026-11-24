@@ -65,7 +65,7 @@ set_source_files_properties(
   PROPERTIES COMPILE_OPTIONS "-ffp-contract=off;-frounding-math")
 
 set_source_files_properties(src/viewer/viewer.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
-target_link_libraries(cocaine PRIVATE "-framework CoreFoundation" "-framework Cocoa" "-framework QuartzCore" "-framework CoreGraphics" "-framework ImageIO" "-framework OpenGL" "-framework OpenAL" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio")
+target_link_libraries(cocaine PRIVATE "-framework CoreFoundation" "-framework IOKit" "-framework Cocoa" "-framework QuartzCore" "-framework CoreGraphics" "-framework ImageIO" "-framework OpenGL" "-framework OpenAL" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio")
 
 enable_testing()
 add_executable(display-pixels-test tests/display-pixels.cpp)
