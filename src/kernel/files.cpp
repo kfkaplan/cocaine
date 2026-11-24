@@ -3,9 +3,14 @@
 #include <sys/attr.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/xattr.h>
+#include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <array>
 #include <cerrno>
+#include <climits>
 
 #include "kernel/guest_struct.h"
 #include "kernel/process.h"
@@ -75,7 +80,159 @@ bool known(u32 wanted, const AttrDef (&defs)[N]) {
   return wanted == 0;
 }
 
+struct AppleDouble {
+  int fd = -1;
+  std::array<u8, 32> finder = {};
+  bool has_finder = false, has_fork = false;
+  u32 fork_offset = 0, fork_size = 0;
+  ~AppleDouble() { if (fd >= 0) close(fd); }
+};
+
+u32 be32(const u8* b) {
+  return (u32)b[0] << 24 | (u32)b[1] << 16 | (u32)b[2] << 8 | b[3];
+}
+
+int read_appledouble(const std::string& host, AppleDouble& info) {
+  const size_t slash = host.rfind('/');
+  if (slash == std::string::npos) return ENOENT;
+  const std::string side = host.substr(0, slash + 1) + "._" + host.substr(slash + 1);
+  info.fd = open(side.c_str(), O_RDONLY);
+  if (info.fd < 0) return errno;
+  struct stat st;
+  if (fstat(info.fd, &st) != 0) return errno;
+  u8 header[26];
+  if (pread(info.fd, header, sizeof header, 0) != sizeof header ||
+      be32(header) != 0x00051607 || be32(header + 4) != 0x00020000) return EINVAL;
+  const u32 count = (u32)header[24] << 8 | header[25];
+  const u64 data_start = 26 + (u64)count * 12;
+  if (st.st_size < 0 || data_start > (u64)st.st_size) return EINVAL;
+  std::vector<std::pair<u32, u32>> ranges;
+  for (u32 i = 0; i < count; i++) {
+    u8 entry[12];
+    if (pread(info.fd, entry, sizeof entry, 26 + (off_t)i * 12) != sizeof entry) return EIO;
+    const u32 kind = be32(entry), offset = be32(entry + 4), length = be32(entry + 8);
+    if ((length && offset < data_start) || (u64)offset + length > (u64)st.st_size) return EINVAL;
+    if (length) ranges.emplace_back(offset, length);
+    if (kind == 9) {
+      if (info.has_finder || length < info.finder.size()) return EINVAL;
+      if (pread(info.fd, info.finder.data(), info.finder.size(), offset) != (ssize_t)info.finder.size())
+        return EIO;
+      info.has_finder = true;
+    } else if (kind == 2) {
+      if (info.has_fork) return EINVAL;
+      info.has_fork = true;
+      info.fork_offset = offset;
+      info.fork_size = length;
+    }
+  }
+  std::sort(ranges.begin(), ranges.end());
+  for (size_t i = 1; i < ranges.size(); i++)
+    if ((u64)ranges[i - 1].first + ranges[i - 1].second > ranges[i].first) return EINVAL;
+  return 0;
+}
+
+bool in_system_root(const std::string& host, const std::string& root) {
+  return !root.empty() && host.size() > root.size() && host.compare(0, root.size(), root) == 0 &&
+         host[root.size()] == '/';
+}
+
+bool system_root_file(const std::string& host, const std::string& root) {
+  if (!in_system_root(host, root)) return false;
+  char resolved[PATH_MAX];
+  return realpath(host.c_str(), resolved) && in_system_root(resolved, root);
+}
+
 }  // namespace
+
+int Process::open_appledouble_fork(const std::string& host, int flags) {
+  static const std::string suffix = "/..namedfork/rsrc";
+  if (!in_system_root(host, opt_.sysroot) || host.size() <= suffix.size() ||
+      host.compare(host.size() - suffix.size(), suffix.size(), suffix) != 0 ||
+      (flags & ~O_CLOEXEC) != O_RDONLY) {
+    errno = ENOENT;
+    return -1;
+  }
+  AppleDouble info;
+  const std::string base = host.substr(0, host.size() - suffix.size());
+  struct stat st;
+  if (!system_root_file(base, opt_.sysroot) || stat(base.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+    errno = ENOENT;
+    return -1;
+  }
+  if (getxattr(base.c_str(), XATTR_RESOURCEFORK_NAME, nullptr, 0, 0, 0) >= 0) {
+    errno = ENOENT;
+    return -1;
+  }
+  if (errno != ENOATTR && errno != ENOTSUP) return -1;
+  const int e = read_appledouble(base, info);
+  if (e || !info.has_fork) {
+    const int err = e ? e : ENOENT;
+    if (err != ENOENT) log_warn("cannot read AppleDouble metadata for %s: %s", base.c_str(), strerror(err));
+    errno = err;
+    return -1;
+  }
+  char tmp[PATH_MAX];
+  if (!confstr(_CS_DARWIN_USER_TEMP_DIR, tmp, sizeof tmp)) { errno = EIO; return -1; }
+  std::string name = std::string(tmp) + "cocaine-fork-XXXXXX";
+  int fd = mkstemp(name.data());
+  if (fd < 0) return -1;
+  auto fail = [&](int err) {
+    close(fd);
+    if (unlink(name.c_str()) != 0) log_warn("cannot remove temporary resource fork %s: %s", name.c_str(), strerror(errno));
+    errno = err;
+    return -1;
+  };
+  std::array<u8, 16384> data;
+  u32 done = 0;
+  while (done < info.fork_size) {
+    const size_t size = std::min<size_t>(data.size(), info.fork_size - done);
+    const ssize_t n = pread(info.fd, data.data(), size, (off_t)info.fork_offset + done);
+    if (n <= 0) return fail(n < 0 ? errno : EIO);
+    size_t written = 0;
+    while (written < (size_t)n) {
+      const ssize_t w = write(fd, data.data() + written, (size_t)n - written);
+      if (w <= 0) return fail(w < 0 ? errno : EIO);
+      written += (size_t)w;
+    }
+    done += (u32)n;
+  }
+  int reader = open(name.c_str(), O_RDONLY | (flags & O_CLOEXEC));
+  if (reader < 0) return fail(errno);
+  struct stat written, opened;
+  if (fstat(fd, &written) != 0 || fstat(reader, &opened) != 0) {
+    const int err = errno; close(reader); return fail(err);
+  }
+  if (written.st_dev != opened.st_dev || written.st_ino != opened.st_ino) {
+    close(reader); return fail(EIO);
+  }
+  if (unlink(name.c_str()) != 0) {
+    const int err = errno; close(reader); close(fd); errno = err; return -1;
+  }
+  close(fd);
+  return reader;
+}
+
+SysRet Process::sys_setattrlist(const std::string& path, u32 list, u32 buf, u32 size, u32 options) {
+  if (!mem_.range_ok(list, 24) || !mem_.range_ok(buf, size)) return SysRet::err(EFAULT);
+  struct attrlist al = {};
+  al.bitmapcount = mem_.r16(list);
+  al.commonattr = mem_.r32(list + 4);
+  al.volattr = mem_.r32(list + 8);
+  al.dirattr = mem_.r32(list + 12);
+  al.fileattr = mem_.r32(list + 16);
+  al.forkattr = mem_.r32(list + 20);
+  if (al.bitmapcount != 5) return SysRet::err(EINVAL);
+  if (al.commonattr != ATTR_CMN_FNDRINFO || al.volattr || al.dirattr || al.fileattr || al.forkattr) {
+    log_warn("setattrlist asked for attributes that aren't translated yet "
+             "(common %x volume %x dir %x file %x fork %x)",
+             al.commonattr, al.volattr, al.dirattr, al.fileattr, al.forkattr);
+    return SysRet::err(ENOTSUP);
+  }
+  if (size < 32) return SysRet::err(EINVAL);
+  const std::string host = host_path(path, !(options & 1));
+  if (setattrlist(host.c_str(), &al, mem_.host(buf), size, options) != 0) return SysRet::err(errno);
+  return SysRet::ok();
+}
 
 // getattrlist: asks for an arbitrary set of a file's attributes in one call.
 // Carbon's File Manager is built on it. The host has the same call, so the
@@ -102,8 +259,68 @@ SysRet Process::sys_getattrlist(const std::string& path, u32 list, u32 buf, u32 
   const std::string host = host_path(path, follow);
   std::vector<u8> in(16384);
   if (getattrlist(host.c_str(), &al, in.data(), in.size(), options) != 0) return SysRet::err(errno);
+  // Carbon walks parent IDs through /.vol; the imported root represents the
+  // guest's volume root (ID 2), not its physical parent on the host.
+  if ((al.commonattr & ATTR_CMN_PAROBJID) && !opt_.sysroot.empty() &&
+      host.rfind('/') == opt_.sysroot.size() &&
+      host.compare(0, opt_.sysroot.size(), opt_.sysroot) == 0) {
+    size_t at = 4;
+    for (const AttrDef& d : kCommon) {
+      if (!(al.commonattr & d.bit)) continue;
+      if (d.bit == ATTR_CMN_PAROBJID) {
+        const u32 root_id[2] = {2, 0};
+        memcpy(in.data() + at, root_id, sizeof root_id);
+        break;
+      }
+      at += host_size(d.type);
+    }
+  }
   struct stat st;
-  const bool is_dir = (follow ? stat(host.c_str(), &st) : lstat(host.c_str(), &st)) == 0 && S_ISDIR(st.st_mode);
+  const bool have_stat = (follow ? stat(host.c_str(), &st) : lstat(host.c_str(), &st)) == 0;
+  const bool is_dir = have_stat && S_ISDIR(st.st_mode);
+  if (have_stat && S_ISREG(st.st_mode) && system_root_file(host, opt_.sysroot) &&
+      ((al.commonattr & ATTR_CMN_FNDRINFO) || (al.fileattr & (ATTR_FILE_RSRCLENGTH | ATTR_FILE_RSRCALLOCSIZE)))) {
+    bool finder_missing = false, fork_missing = false;
+    if (al.commonattr & ATTR_CMN_FNDRINFO) {
+      if (getxattr(host.c_str(), XATTR_FINDERINFO_NAME, nullptr, 0, 0, 0) < 0) {
+        if (errno != ENOATTR && errno != ENOTSUP) return SysRet::err(errno);
+        finder_missing = true;
+      }
+    }
+    if (al.fileattr & (ATTR_FILE_RSRCLENGTH | ATTR_FILE_RSRCALLOCSIZE)) {
+      if (getxattr(host.c_str(), XATTR_RESOURCEFORK_NAME, nullptr, 0, 0, 0) < 0) {
+        if (errno != ENOATTR && errno != ENOTSUP) return SysRet::err(errno);
+        fork_missing = true;
+      }
+    }
+    if (finder_missing || fork_missing) {
+      AppleDouble info;
+      const int error = read_appledouble(host, info);
+      if (error && error != ENOENT) {
+        log_warn("cannot read AppleDouble metadata for %s: %s", host.c_str(), strerror(error));
+        return SysRet::err(error);
+      }
+      if (!error) {
+        size_t at = 4;
+        for (const AttrDef& d : kCommon) {
+          if (!(al.commonattr & d.bit)) continue;
+          if (d.bit == ATTR_CMN_FNDRINFO && finder_missing && info.has_finder)
+            memcpy(in.data() + at, info.finder.data(), info.finder.size());
+          at += host_size(d.type);
+        }
+        for (const AttrDef& d : kVolume) if (al.volattr & d.bit) at += host_size(d.type);
+        for (const AttrDef& d : kFile) {
+          if (!(al.fileattr & d.bit)) continue;
+          if ((d.bit == ATTR_FILE_RSRCLENGTH || d.bit == ATTR_FILE_RSRCALLOCSIZE) &&
+              fork_missing && info.has_fork) {
+            const u64 length = info.fork_size;
+            memcpy(in.data() + at, &length, sizeof length);
+          }
+          at += host_size(d.type);
+        }
+      }
+    }
+  }
 
   // The attributes present, in the order both sides lay them out. Directory
   // attributes come back only for directories, file attributes only for files.

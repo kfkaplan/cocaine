@@ -216,7 +216,33 @@ int main(int argc, char** argv) {
 
   std::string err;
   MachImage exe;
-  if (prefer && !want && load_macho(resolved, prefer, exe, err)) {
+  u8 header[40];
+  size_t header_size = 0;
+  if (FILE* f = std::fopen(resolved, "rb")) {
+    header_size = std::fread(header, 1, sizeof header, f);
+    std::fclose(f);
+  }
+  const bool pef = is_powerpc_pef(header, header_size);
+  std::string launcher;
+  if (pef) {
+    if (want && *want == Arch::I386) {
+      std::fprintf(stderr, "cocaine: %s: is a PowerPC PEF/CFM file, not i386\n", resolved);
+      return 126;
+    }
+    if (info_only) {
+      std::printf("%s\n  architecture: ppc (big-endian)\n  kind:         PowerPC PEF/CFM\n", resolved);
+      return 0;
+    }
+    if (opt.sysroot.empty()) {
+      std::fprintf(stderr, "cocaine: PowerPC PEF/CFM programs need a Leopard system root\n");
+      return 126;
+    }
+    launcher = opt.sysroot + "/System/Library/Frameworks/Carbon.framework/Versions/A/Support/LaunchCFMApp";
+    if (!load_macho(launcher, Arch::PPC, exe, err)) {
+      std::fprintf(stderr, "cocaine: cannot load Leopard's LaunchCFMApp: %s\n", err.c_str());
+      return 126;
+    }
+  } else if (prefer && !want && load_macho(resolved, prefer, exe, err)) {
     // Loaded the preferred half.
   } else if (!load_macho(resolved, want, exe, err)) {
     std::fprintf(stderr, "cocaine: %s\n", err.c_str());
@@ -233,7 +259,16 @@ int main(int argc, char** argv) {
     return 126;
   }
 
-  std::vector<std::string> guest_argv{resolved};
+  std::vector<std::string> guest_argv;
+  if (pef) {
+    std::string guest_target = resolved;
+    if (guest_target.size() > opt.sysroot.size() &&
+        guest_target.compare(0, opt.sysroot.size(), opt.sysroot) == 0 &&
+        guest_target[opt.sysroot.size()] == '/') guest_target.erase(0, opt.sysroot.size());
+    guest_argv = {launcher, guest_target};
+  } else {
+    guest_argv = {resolved};
+  }
   for (int k = i + 1; k < argc; k++) guest_argv.push_back(argv[k]);
   // The guest inherits this environment, minus the DYLD_ variables: those
   // steer this Mac's dynamic linker and name libraries the guest can't load.

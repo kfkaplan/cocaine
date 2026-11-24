@@ -505,11 +505,14 @@ void Process::run_input_script(const std::string& script) {
       const u32 rx = (u32)v[0], ry = (u32)v[1], rw = (u32)v[2], rh = (u32)v[3];
       u32 dw = 0, dh = 0;
       guest_display_size(dw, dh);
-      if (!display_at_ || rx + rw > dw || ry + rh > dh || !rw || !rh) continue;
+      if (!display_file_ || (u64)rx + rw > dw || (u64)ry + rh > dh || !rw || !rh) continue;
       auto grab = [&] {
         std::vector<u8> px;
+        std::lock_guard<std::mutex> lk(publish_mu_);
+        publish_changed();
+        const u8* pixels = display_file_ + sizeof(DisplayFileHeader);
         for (u32 row = 0; row < rh; row++) {
-          const u8* from = mem_.host(display_at_ + ((ry + row) * dw + rx) * 4);
+          const u8* from = pixels + ((size_t)(ry + row) * dw + rx) * 4;
           px.insert(px.end(), from, from + rw * 4);
         }
         return px;
@@ -528,11 +531,14 @@ void Process::run_input_script(const std::string& script) {
       u32 dw = 0, dh = 0;
       guest_display_size(dw, dh);
       const u32 bytes = dw * dh * 4;
-      if (display_at_ && mem_.range_ok(display_at_, bytes)) {
+      if (display_file_) {
+        std::lock_guard<std::mutex> lk(publish_mu_);
+        publish_changed();
         if (FILE* f = fopen(text, "wb")) {
-          fwrite(mem_.host(display_at_), 1, bytes, f);
+          if (fwrite(display_file_ + sizeof(DisplayFileHeader), 1, bytes, f) != bytes)
+            log_warn("input script: could not write the display picture to %s", text);
           fclose(f);
-        }
+        } else log_warn("input script: could not open %s for the display picture", text);
       } else {
         log_warn("input script: no display to take a picture of yet");
       }

@@ -408,6 +408,10 @@ struct RunView: View {
     let archs = model.targetArchitectures
     guard model.target != nil else { return nil }
     if archs.isEmpty || archs == .modern { return "That doesn't look like a PowerPC or 32-bit Intel program..." }
+    if archs.contains(.classicPEF) {
+      if model.mode == .intel { return "This program has no 32-bit Intel code..." }
+      return "PowerPC PEF/CFM support is experimental - some programs may not run..."
+    }
     switch model.mode {
     case .auto:
       if !archs.contains(.powerpc) && archs.contains(.intel) && !model.keysInstalled {

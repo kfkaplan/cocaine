@@ -150,6 +150,7 @@ class Process {
   // The window server has just put an update on the screen: copy what
   // changed to the viewer (mach.cpp). Nothing in other processes.
   void publish_display();
+  void set_display_format(u32 width, u32 height, u32 stride, u32 bits);
 
  private:
   // ---- process.cpp ----
@@ -183,6 +184,8 @@ class Process {
   SysRet sys_getdirentries(int fd, u32 buf, u32 nbytes, u32 basep, bool wide);
   SysRet sys_statfs(const struct statfs& fs, u32 buf, bool wide);
   SysRet sys_getattrlist(const std::string& path, u32 list, u32 buf, u32 size, u32 options);
+  SysRet sys_setattrlist(const std::string& path, u32 list, u32 buf, u32 size, u32 options);
+  int open_appledouble_fork(const std::string& host, int flags);
   SysRet sys_socket_call(u32 num, SysArgs& a);
   void write_stat(u32 buf, const struct stat& st, bool wide);
   u32 machdep_call(Thread& t, u32 num, SysArgs& a);
@@ -192,6 +195,7 @@ class Process {
   // Where a path the guest names lives on the host. System directories are
   // redirected into the system root.
   std::string host_path(const std::string& guest_path, bool follow_last = true) const;
+  std::string bundled_wallpaper_path() const;
   // The reverse, for calls that hand a path back to the guest.
   std::string guest_path(const std::string& host_path) const;
 
@@ -238,6 +242,7 @@ class Process {
   bool display_shared_ = false;
   u8* display_file_ = nullptr;  // the shared file the viewer reads: header, then pixels
   u32 display_w_ = 0, display_h_ = 0;
+  u32 display_stride_ = 0, display_bits_ = 32;
   std::mutex publish_mu_;
   std::atomic<u64> hook_published_ns_{0};  // when publish_display last ran
   bool publish_changed();  // with publish_mu_ held

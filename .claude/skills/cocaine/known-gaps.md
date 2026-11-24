@@ -2,6 +2,22 @@
 
 Moved from the README on 2026-11-18. What doesn't work yet, or works only partly, and why. The README keeps a short list of the ones a user would notice.
 
+- PowerPC PEF/CFM launch is experimental. EV Nova 1.0.0 loads and passes
+  monitor initialization on 10.5.6, but stops at "Error initializing
+  Registration Tool!" even when Finder metadata writes succeed; its cause
+  remains unknown. Do not bypass the game's registration.
+- Ghost Recon Demo's extensionless app bundle is recognized and loads via
+  LaunchCFMApp. With volume metadata fixed it gets past its installation
+  check, but crashes during graphics setup after unimplemented
+  `aglQueryRendererInfoCFM` and `aglChoosePixelFormatCFM` calls. It is not
+  yet playable.
+- AppleDouble resource forks are exposed read-only from temporary files when
+  native metadata is missing. Their file descriptors do not retain the
+  original fork's path, and writable sidecar forks are not supported.
+- Switching the virtual display to RGB555 is handled only for the checked
+  10.5.6 PowerPC CoreGraphics implementation. Other implementations and
+  8-bit display modes are not supported for this mode switch.
+
 - Some Mach port rights are never released: rights that arrive with
   requests from other processes, IOKit's registry and iterator ports, and
   the ports of threads that have ended. That only adds up over hours of

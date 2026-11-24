@@ -74,6 +74,12 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   Apple's own old libraries, from a Mac OS X install you supply, as guest
   code. Guest paths under `/System`, `/usr`, `/Library` and friends are
   redirected into that system root; everything else is this Mac's own files.
+  PowerPC PEF executables are passed to Leopard's `LaunchCFMApp`. Imported
+  AppleDouble sidecars supply missing Finder metadata and read-only resource
+  forks without changing the imported files. Parent IDs for immediate system
+  root children use the guest volume root ID so Carbon can build paths.
+  Volume enumeration and Carbon's `/.vol/<device>/@` reference use the
+  imported root's backing volume, including its actual read-only status.
 - **Fake kernel.** `src/kernel` stands in for what sits underneath those
   libraries:
   - BSD system calls. The host is Darwin too, so most map onto the same host
@@ -110,7 +116,7 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   message arrives for it. Only daemons known to work are on call (`notifyd`,
   `DirectoryService`, `dirhelper`, `securityd`, `coreservicesd`, `configd`
   (without its plug-ins, `-b`, and in the foreground, `-d`), and
-  `WindowServer`, `ATSServer` and `loginwindow`, the last three for Intel
+  `WindowServer`, `ATSServer`, `loginwindow` and `hidd`, the last four for Intel
   programs only where the keys to them have been supplied). Each starts in
   the guest's `/`, as launchd starts daemons;
   `COCAINE_DAEMONS=all`, or a
@@ -127,6 +133,8 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   draws one itself from inside loginwindow once the session is ready: a
   desktop-level window that ignores the mouse, with `COCAINE_WALLPAPER` (or
   `images/linen.jpeg`) drawn to fill it (`src/kernel/wallpaper.cpp`). The
+  bundled image is exposed at `/.cocaine/linen.jpeg` so it remains accessible
+  even when the checkout is under the host's private Library folder. The
   Apple menu's logo is swapped for a pile of powder in a copy of CoreUI's art
   file that guests are shown instead of Apple's (`src/session/art.cpp`).
   Closing the viewer window ends the whole run. SKILL.md has the details.
@@ -140,13 +148,17 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   program's service lookups until the login window has put itself in front,
   which that process's cocaine reports. Any other session leaves the window
   server alone until something asks for it. The window server draws into a
-  "VirtualDisplay" of its own making; its cocaine copies whatever changes
+  "VirtualDisplay" of its own making; checked CoreGraphics patches for the
+  original release and 10.5.6 set its size. Its cocaine copies whatever changes
   there into a small shared file, checking 120 times a second, and starts
   `cocaine --view` on it. cocaine hooks the window server's own
   `CGXUpdateDisplay` (a private CoreGraphics function, on both CPUs): when
   it returns, the screen holds a whole picture, and what changed is copied
   to the viewer then, on the window server's thread, before the next update
   can start, so a window halfway through being redrawn is never shown torn.
+  On the checked 10.5.6 PowerPC CoreGraphics, a second hook tracks virtual
+  display mode changes, including row stride; RGB555 pixels are expanded
+  to the viewer's 32-bit format.
   (A polling copier remains for a window server where the hook isn't
   working, and stands down once the hook has published.) The file's frame
   number is odd while a picture is being written, so the viewer never takes

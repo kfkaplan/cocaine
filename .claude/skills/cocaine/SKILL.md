@@ -93,7 +93,8 @@ error such as IOKit's `kNotFound`.
 - `kWorkingDaemons` and `kWindowDaemons` list the Apple daemons a session may
   start (on demand, at the first lookup of their service). Others are told
   "no such service". configd was added on 2026-11-18 after the Apple menu
-  crashed in SCPreferences without it.
+  crashed in SCPreferences without it. Leopard 10.5.6's window server needs
+  `hidd` and waits for `com.apple.iohideventsystem` until it starts.
 - `kExtraArguments`: configd runs with `-b` (no plug-ins: they'd manage the
   Mac's real network, power, Bluetooth) and `-d` (stay in the foreground: it
   only does so for launchd as pid 1, and guests see the session server's pid).
@@ -155,7 +156,8 @@ found from the cocaine binary's path, else Leopard's `DefaultDesktop.jpg`.
 The window ignores the mouse (`CGSSetWindowTags` bit 9, as Cocoa's
 `setIgnoresMouseEvents:`): taking clicks, it made loginwindow the active
 program and the front app stopped getting keys (the suite's Calculator key
-test caught it).
+test caught it). The bundled picture is exposed at `/.cocaine/linen.jpeg`,
+including when the checkout is in the host's private Library folder.
 
 ## Files appearing where cocaine was run
 
@@ -192,8 +194,9 @@ makes `gui/build/Cocaine.zip` for a release. Releases are tagged `gui-vX.Y`
   `git rev-list --count HEAD..@{u}`; update is `git pull --ff-only` (fails on
   local changes, by design). Keys are validated (32 printable ASCII each),
   written as 64 bytes to `<sysroot>/.cocaine/osk` with mode 600, removed to
-  the Trash, never logged. `Architectures.of` reads the Mach-O or fat header
-  (an app's main program from its bundle) for the Run tab's mode checks.
+  the Trash, never logged. `Architectures.of` reads the Mach-O, fat or
+  PowerPC PEF header (an app's main program from its bundle) for the Run
+  tab's mode checks. PEF is identified but not yet allowed to run.
   `killAll` (the Run tab's Kill All, since 1.3) counts with `pgrep -x cocaine`,
   sends `pkill -x cocaine`, and `-9` to any still there three seconds on; the
   exact name leaves the launcher itself (Cocaine) alone. Log lines are plain

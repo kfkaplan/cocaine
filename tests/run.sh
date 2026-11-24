@@ -104,6 +104,8 @@ real() {
   fi
 }
 if [ -f "$root/usr/lib/dyld" ]; then
+  version=$(/usr/libexec/PlistBuddy -c 'Print :ProductVersion' \
+    "$root/System/Library/CoreServices/SystemVersion.plist")
   for arch in ppc i386; do
     real $arch "hello world" /bin/echo hello world
     real $arch "42" /bin/expr 6 '*' 7
@@ -112,8 +114,36 @@ if [ -f "$root/usr/lib/dyld" ]; then
     real $arch "$(wc -l <"$here/guest/rt.c" | tr -d ' ')" /usr/bin/awk 'END { print NR }' "$here/guest/rt.c"
     real $arch "Darwin 9.0.0" /usr/bin/uname -sr
     # CoreFoundation, then Foundation with the Objective-C runtime.
-    real $arch "10.5" /usr/bin/sw_vers -productVersion
+    real $arch "$version" /usr/bin/sw_vers -productVersion
     real $arch "Mac OS X" /usr/bin/defaults read /System/Library/CoreServices/SystemVersion ProductName
+    if [ -f "$root/usr/bin/python2.5" ]; then
+      log="$work/file-metadata-$arch.log"
+      actual=$(PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
+        "$root/usr/bin/python2.5" -c "$(cat "$here/guest/appledouble.py")" 2>"$log")
+      status=$?
+      if [ "$status" -eq 0 ] && [ "$actual" = "file metadata ok" ]; then
+        echo "ok    $arch file metadata"
+        pass=$((pass + 1))
+      else
+        echo "FAIL  $arch file metadata: $actual"
+        drop_noise "$log"
+        cat "$log"
+        fail=$((fail + 1))
+      fi
+      log="$work/volume-metadata-$arch.log"
+      actual=$(PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
+        "$root/usr/bin/python2.5" -c "$(cat "$here/guest/volume.py")" 2>"$log")
+      status=$?
+      if [ "$status" -eq 0 ] && [ "$actual" = "volume metadata ok" ]; then
+        echo "ok    $arch volume metadata"
+        pass=$((pass + 1))
+      else
+        echo "FAIL  $arch volume metadata: $actual"
+        drop_noise "$log"
+        cat "$log"
+        fail=$((fail + 1))
+      fi
+    fi
     # Processes: the shell forks, runs programs and scripts, pipes them
     # together and traps signals; arch starts programs for the other CPU.
     mkdir -p "$work/procs-$arch"
@@ -171,6 +201,39 @@ if [ -f "$root/usr/lib/dyld" ]; then
       else
         echo "FAIL  $arch Calculator.app was not handed a typed key"
         fail=$((fail + 1))
+      fi
+      if [ "$arch" = ppc ]; then
+        # Exercise the default large display, not just Leopard's native size:
+        # a partial or missing CoreGraphics patch used to produce a black screen.
+        display_work=$(mktemp -d /tmp/cocaine-display-test.XXXXXX)
+        frame=$display_work/frame.raw
+        COCAINE_DISPLAY=2560x1600 \
+          COCAINE_SCRIPT="wait 15; shot $frame; wait 5; shot $frame; wait 5; shot $frame" \
+          "$cocaine" -vv --arch ppc --sysroot "$root" \
+          "$root/Applications/Calculator.app" > "$display_work/app.log" 2>&1 &
+        display_app=$!
+        session_log="$(getconf DARWIN_USER_TEMP_DIR)cocaine-session-$display_app.log"
+        display_ok=no
+        for second in $(seq 1 45); do
+          sleep 1
+          if [ -s "$frame" ] && grep -q 'the login window has the session ready' "$session_log" 2>/dev/null &&
+            python3 -c 'import sys; p = open(sys.argv[1], "rb").read(); sys.exit(0 if len(p) == 2560*1600*4 and len({p[i:i+4] for i in range(0, len(p), 64)}) > 16 else 1)' "$frame"; then
+            display_ok=yes
+            break
+          fi
+          kill -0 "$display_app" 2>/dev/null || break
+        done
+        kill "$display_app" 2>/dev/null
+        wait "$display_app" 2>/dev/null
+        if [ "$display_ok" = yes ] && ! grep -q "display copier stopped" "$session_log"; then
+          echo "ok    ppc Calculator.app draws a full-size desktop"
+          pass=$((pass + 1))
+        else
+          echo "FAIL  ppc Calculator.app did not draw a full-size desktop"
+          fail=$((fail + 1))
+        fi
+        rm -f "$frame" "$display_work/app.log"
+        rmdir "$display_work"
       fi
     else
       # Without them the Intel half gets as far as one can: all of AppKit

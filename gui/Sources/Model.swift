@@ -31,19 +31,20 @@ struct Architectures: OptionSet {
   static let powerpc = Architectures(rawValue: 1)
   static let intel = Architectures(rawValue: 2)
   static let modern = Architectures(rawValue: 4)  // 64-bit only: not for cocaine
+  static let classicPEF = Architectures(rawValue: 8)
 
   var description: String {
     var names: [String] = []
-    if contains(.powerpc) { names.append("PowerPC") }
+    if contains(.powerpc) { names.append(contains(.classicPEF) ? "PowerPC (PEF/CFM)" : "PowerPC") }
     if contains(.intel) { names.append("32-bit Intel") }
     if contains(.modern) { names.append("64-bit") }
     return names.isEmpty ? "nothing cocaine can run" : names.joined(separator: " and ")
   }
 
-  /// Read from the program's Mach-O header (for an app, its main program's).
+  /// Read the program's Mach-O or PowerPC PEF header (for an app, its main program's).
   static func of(_ url: URL) -> Architectures {
     var exe = url
-    if url.pathExtension.lowercased() == "app", let bundle = Bundle(url: url), let main = bundle.executableURL {
+    if let bundle = Bundle(url: url), let main = bundle.executableURL {
       exe = main
     }
     guard let handle = try? FileHandle(forReadingFrom: exe) else { return [] }
@@ -62,6 +63,10 @@ struct Architectures: OptionSet {
       case 0x0100_0012, 0x0100_0007, 0x0100_000C: return .modern
       default: return []
       }
+    }
+    if head.count >= 40, be32(0) == 0x4A6F_7921, be32(4) == 0x7065_6666,
+       be32(8) == 0x7077_7063, be32(12) == 1, (head[32] != 0 || head[33] != 0) {
+      return [.powerpc, .classicPEF]
     }
     switch be32(0) {
     case 0xCAFE_BABE:  // universal: a list of 20-byte entries

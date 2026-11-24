@@ -55,9 +55,15 @@ It still needs the build tools below. You can build it yourself with `gui/build.
   and the old kernel decrypted them with keys read from the hardware. Put the
   64 characters (`OSK0` then `OSK1`) in `sysroots/10.5/.cocaine/osk`, or in
   the `COCAINE_OSK` variable. They aren't in this repository and must stay
-  out of it. PowerPC apps need none of this, and a universal app runs its
+  out of it. Both keys must be correct: incorrect keys can make Leopard's
+  login window and font server crash, leaving a blank screen. PowerPC apps
+  need none of this, and a universal app runs its
   PowerPC half unless you ask for `--arch i386`.
 - The programs to run. None come with this repository.
+- Classic PowerPC PEF/CFM support is experimental. EV Nova 1.0.0 gets past
+  loading and monitor setup, but still stops at registration-tool initialization.
+  Ghost Recon Demo gets past its installation check but crashes during AGL
+  graphics setup.
 
 ## Building and running
 

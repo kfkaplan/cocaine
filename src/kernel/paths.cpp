@@ -11,7 +11,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <climits>
+#include <cstdlib>
 
 #include "kernel/process.h"
 #include "session/art.h"
@@ -152,9 +154,16 @@ std::string private_home_path(const std::string& root, const std::string& path) 
 
 }  // namespace
 
+std::string Process::bundled_wallpaper_path() const {
+  std::string dir = opt_.self_path;
+  for (int up = 0; up < 2 && dir.rfind('/') != std::string::npos; up++) dir.erase(dir.rfind('/'));
+  return dir + "/images/linen.jpeg";
+}
+
 std::string Process::host_path(const std::string& guest, bool follow_last) const {
   const std::string& root = opt_.sysroot;
   if (root.empty() || guest.empty()) return guest;
+  if (guest == "/.cocaine/linen.jpeg") return bundled_wallpaper_path();
   if (guest[0] != '/') {
     // A relative path is this Mac's business, except one that leads into
     // the private part of the home folder from the folder above it.
@@ -204,6 +213,22 @@ std::string Process::host_path(const std::string& guest, bool follow_last) const
   if (path.compare(0, 6, "/.vol/") == 0) {
     const std::vector<std::string> parts = split(path.substr(6));
     if (parts.size() >= 2) {
+      if (parts[1] == "@") {
+        // Carbon uses @ for a volume root. Keep other volumes on the host,
+        // but show the imported root for the device containing that root.
+        char* end = nullptr;
+        errno = 0;
+        const unsigned long long device = strtoull(parts[0].c_str(), &end, 10);
+        struct stat st;
+        if (!parts[0].empty() && parts[0][0] >= '0' && parts[0][0] <= '9' &&
+            !errno && !*end &&
+            stat(root.c_str(), &st) == 0 && device == (unsigned long long)st.st_dev) {
+          std::string suffix;
+          for (size_t i = 2; i < parts.size(); i++) suffix += "/" + parts[i];
+          return suffix.empty() ? root : host_path(suffix, follow_last);
+        }
+        return path;
+      }
       std::string folder;
       if (parts[1] == "2") {
         folder = "";

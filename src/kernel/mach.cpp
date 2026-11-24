@@ -29,6 +29,7 @@
 
 #include "kernel/mach_message.h"
 #include "kernel/process.h"
+#include "kernel/display_pixels.h"
 #include "kernel/tunnel.h"
 #include "viewer/viewer.h"
 
@@ -425,16 +426,35 @@ void guest_display_size(u32& width, u32& height) {
 // with the frame number odd while it does.
 bool Process::publish_changed() {
   if (!display_file_ || !display_at_) return false;
-  const size_t row = (size_t)display_w_ * 4, picture = row * display_h_;
-  if (!mem_.range_ok(display_at_, picture)) return false;
+  const size_t row = (size_t)display_w_ * 4;
+  const size_t source_row = display_stride_ ? display_stride_ : row;
+  if ((display_bits_ != 16 && display_bits_ != 32) ||
+      source_row < (size_t)display_w_ * (display_bits_ / 8) ||
+      !mem_.range_ok(display_at_, (u64)source_row * display_h_)) return false;
   auto* head = (DisplayFileHeader*)display_file_;
   u8* const to = display_file_ + sizeof(DisplayFileHeader);
   const u8* const from = mem_.host(display_at_);
   bool started = false;
   constexpr u32 kBand = 32;
+  std::vector<u8> converted;
+  if (display_bits_ == 16 || source_row != row) converted.resize(row * kBand);
   for (u32 y = 0; y < display_h_; y += kBand) {
     const size_t at = row * y, n = row * std::min(kBand, display_h_ - y);
-    if (memcmp(to + at, from + at, n) == 0) continue;
+    const u8* source = from + source_row * y;
+    if (!converted.empty()) {
+      const u32 lines = std::min(kBand, display_h_ - y);
+      for (u32 line = 0; line < lines; line++) {
+        u8* dst = converted.data() + row * line;
+        const u8* src = source + source_row * line;
+        if (display_bits_ == 32) {
+          memcpy(dst, src, row);
+        } else {
+          rgb555_to_display(src, dst, display_w_, mem_.big_endian());
+        }
+      }
+      source = converted.data();
+    }
+    if (memcmp(to + at, source, n) == 0) continue;
     if (!started) {
       __atomic_add_fetch(&head->frame, 1, __ATOMIC_ACQ_REL);  // odd: being written
       // The viewer must see the odd number before any of the pixels that
@@ -442,10 +462,25 @@ bool Process::publish_changed() {
       __atomic_thread_fence(__ATOMIC_SEQ_CST);
       started = true;
     }
-    memcpy(to + at, from + at, n);
+    memcpy(to + at, source, n);
   }
   if (started) __atomic_add_fetch(&head->frame, 1, __ATOMIC_RELEASE);  // even: a whole picture
   return started;
+}
+
+void Process::set_display_format(u32 width, u32 height, u32 stride, u32 bits) {
+  u32 w, h;
+  guest_display_size(w, h);
+  std::lock_guard<std::mutex> lk(publish_mu_);
+  if (width != w || height != h || (bits != 16 && bits != 32) ||
+      stride < (u64)width * (bits / 8) || (u64)stride * height > UINT32_MAX) {
+    log_warn("unsupported virtual display format: %ux%u, %u bits, %u bytes per row", width, height, bits, stride);
+    display_bits_ = 0;
+    return;
+  }
+  display_bits_ = bits;
+  display_stride_ = stride;
+  publish_changed();
 }
 
 void Process::publish_display() {

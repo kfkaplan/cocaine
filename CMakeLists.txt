@@ -67,6 +67,9 @@ set_source_files_properties(src/viewer/viewer.mm PROPERTIES COMPILE_OPTIONS "-fo
 target_link_libraries(cocaine PRIVATE "-framework CoreFoundation" "-framework Cocoa" "-framework QuartzCore" "-framework CoreGraphics" "-framework ImageIO" "-framework OpenGL" "-framework OpenAL" "-framework AudioToolbox" "-framework AudioUnit" "-framework CoreAudio")
 
 enable_testing()
+add_executable(display-pixels-test tests/display-pixels.cpp)
+target_include_directories(display-pixels-test PRIVATE src)
+add_test(NAME display-pixels COMMAND display-pixels-test)
 # The ARM64 instruction encodings the PowerPC translator emits, against the
 # system's assembler.
 add_test(NAME arm64-encodings

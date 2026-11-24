@@ -86,6 +86,7 @@ const char* bsd_name(u32 n) {
     case 199: return "lseek";
     case 202: return "sysctl";
     case 220: return "getattrlist";
+    case 221: return "setattrlist";
     case 234: return "getxattr";
     case 240: return "listxattr";
     case 279: return "stat_extended";
@@ -696,7 +697,10 @@ SysRet Process::bsd_syscall(Thread& t, u32 num, SysArgs& a) {
         // guest's dyld. Without it, dyld quietly skips DTrace registration.
         r = SysRet::err(ENOENT);
       } else {
-        r = result(::open(host_path(path).c_str(), flags, mode));
+        const std::string host = host_path(path);
+        int fd = ::open(host.c_str(), flags, mode);
+        if (fd < 0 && errno == ENOENT) fd = open_appledouble_fork(host, flags);
+        r = result(fd);
       }
       break;
     }
@@ -805,11 +809,13 @@ SysRet Process::bsd_syscall(Thread& t, u32 num, SysArgs& a) {
       const std::string path = path_arg();
       const u32 buf = a.u();
       struct statfs fs;
+      const bool guest_root = path == "/" && !opt_.sysroot.empty();
       if (bad) {
         r = SysRet::err(EFAULT);
-      } else if (statfs(host_path(path).c_str(), &fs) != 0) {
+      } else if (statfs(guest_root ? opt_.sysroot.c_str() : host_path(path).c_str(), &fs) != 0) {
         r = SysRet::err(errno);
       } else {
+        if (guest_root) strlcpy(fs.f_mntonname, "/", sizeof fs.f_mntonname);
         r = sys_statfs(fs, buf, num == 345);
       }
       break;
@@ -867,17 +873,27 @@ SysRet Process::bsd_syscall(Thread& t, u32 num, SysArgs& a) {
       r = bad ? SysRet::err(EFAULT) : sys_getattrlist(path, list, buf, size, options);
       break;
     }
+    case 221: {  // setattrlist
+      const std::string path = path_arg();
+      const u32 list = a.u(), buf = a.u(), size = a.u(), options = a.u();
+      r = bad ? SysRet::err(EFAULT) : sys_setattrlist(path, list, buf, size, options);
+      break;
+    }
     case 18:
     case 347: {  // getfsstat, getfsstat64: the mounted volumes. One, as far as the guest knows.
       const u32 buf = a.u(), size = a.u();
       struct statfs fs;
-      if (statfs("/", &fs) != 0) {
+      // The one enumerated volume is the imported root's backing volume,
+      // not necessarily the host's read-only system volume.
+      const char* root = opt_.sysroot.empty() ? "/" : opt_.sysroot.c_str();
+      if (statfs(root, &fs) != 0) {
         r = SysRet::err(errno);
       } else if (!buf) {
         r = SysRet::ok(1);
       } else if (size < (num == 347 ? 2168u : 272u)) {
         r = SysRet::ok(0);
       } else {
+        strlcpy(fs.f_mntonname, "/", sizeof fs.f_mntonname);
         r = sys_statfs(fs, buf, num == 347);
         if (r.kind == SysRet::Value) r = SysRet::ok(1);
       }
