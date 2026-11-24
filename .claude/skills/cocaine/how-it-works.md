@@ -83,6 +83,8 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   Volume enumeration uses the imported root's backing volume, including its
   actual read-only status, and adds browsable host mounts under `/Volumes`.
   Carbon's `/.vol/<device>/@` and root folder ID 2 resolve those mounts.
+  The guest root's object and volume names are `Macintosh HD`, not the
+  imported folder's name; other mounted volumes keep their own names.
   IOKit identifies mounted disk images and optical media by BSD device name
   and presents a minimal CD media ancestor with the `Whole` property, for
   installers that check for a disc. This does not emulate disc commands.
@@ -92,6 +94,8 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
     call after translating the calling convention, structure layouts and (for
     PowerPC) byte order. `exit` ends the host process from whichever guest
     thread called it, after reporting statistics and flushing host output.
+    The named CPU, bus and time-base frequency sysctls return 64-bit values,
+    while their legacy numeric MIBs return 32-bit values, as on Leopard.
     Waiting for the main thread to notice an exit flag left GameRanger's Quit
     hung when its main thread was blocked in a Mach receive.
     `F_PREALLOCATE` translates the guest's 32-bit

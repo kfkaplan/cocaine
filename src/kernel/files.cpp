@@ -302,6 +302,20 @@ SysRet Process::sys_getattrlist(const std::string& path, u32 list, u32 buf, u32 
   struct stat st;
   const bool have_stat = (follow ? stat(host.c_str(), &st) : lstat(host.c_str(), &st)) == 0;
   const bool is_dir = have_stat && S_ISDIR(st.st_mode);
+  bool root_entry = !opt_.sysroot.empty() && (path == "/" || host == opt_.sysroot);
+  if (!opt_.sysroot.empty() && !root_entry && have_stat &&
+      ((al.commonattr & ATTR_CMN_NAME) || (al.volattr & ATTR_VOL_INFO))) {
+    struct stat slash;
+    if (stat("/", &slash) != 0) return SysRet::err(errno);
+    root_entry = st.st_dev == slash.st_dev && st.st_ino == slash.st_ino;
+  }
+  bool root_volume = root_entry;
+  if (!opt_.sysroot.empty() && !root_volume && (al.volattr & ATTR_VOL_INFO)) {
+    if (!have_stat) return SysRet::err(errno);
+    struct stat root_stat;
+    if (stat(opt_.sysroot.c_str(), &root_stat) != 0) return SysRet::err(errno);
+    root_volume = st.st_dev == root_stat.st_dev;
+  }
   if (have_stat && S_ISREG(st.st_mode) && system_root_file(host, opt_.sysroot) &&
       ((al.commonattr & ATTR_CMN_FNDRINFO) || (al.fileattr & (ATTR_FILE_RSRCLENGTH | ATTR_FILE_RSRCALLOCSIZE)))) {
     bool finder_missing = false, fork_missing = false;
@@ -348,13 +362,23 @@ SysRet Process::sys_getattrlist(const std::string& path, u32 list, u32 buf, u32 
 
   // The attributes present, in the order both sides lay them out. Directory
   // attributes come back only for directories, file attributes only for files.
-  std::vector<AttrType> fields;
-  for (const AttrDef& d : kCommon) if (al.commonattr & d.bit) fields.push_back(d.type);
-  for (const AttrDef& d : kVolume) if (al.volattr & d.bit) fields.push_back(d.type);
+  struct Field {
+    AttrType type;
+    bool root_name;
+  };
+  std::vector<Field> fields;
+  for (const AttrDef& d : kCommon) {
+    if (al.commonattr & d.bit)
+      fields.push_back({d.type, d.bit == ATTR_CMN_NAME &&
+                               ((al.volattr & ATTR_VOL_INFO) ? root_volume : root_entry)});
+  }
+  for (const AttrDef& d : kVolume) {
+    if (al.volattr & d.bit) fields.push_back({d.type, d.bit == ATTR_VOL_NAME && root_volume});
+  }
   if (is_dir) {
-    for (const AttrDef& d : kDir) if (al.dirattr & d.bit) fields.push_back(d.type);
+    for (const AttrDef& d : kDir) if (al.dirattr & d.bit) fields.push_back({d.type, false});
   } else {
-    for (const AttrDef& d : kFile) if (al.fileattr & d.bit) fields.push_back(d.type);
+    for (const AttrDef& d : kFile) if (al.fileattr & d.bit) fields.push_back({d.type, false});
   }
 
   const bool be = mem_.big_endian();
@@ -374,10 +398,12 @@ SysRet Process::sys_getattrlist(const std::string& path, u32 list, u32 buf, u32 
     size_t guest_ref;  // where the guest's offset/length pair sits
     size_t host_data;  // where the host put the data
     u32 length;
+    bool root_name;
   };
   std::vector<Pending> pending;
   size_t hp = 4;
-  for (AttrType t : fields) {
+  for (const Field& field : fields) {
+    const AttrType t = field.type;
     const size_t gp = out.size();
     switch (t) {
       case kU32:
@@ -403,7 +429,7 @@ SysRet Process::sys_getattrlist(const std::string& path, u32 list, u32 buf, u32 
       }
       case kRef: {
         const s32 offset = (s32)get32(hp);
-        pending.push_back({gp, (size_t)((s64)hp + offset), get32(hp + 4)});
+        pending.push_back({gp, (size_t)((s64)hp + offset), get32(hp + 4), field.root_name});
         put32(out, gp, 0);
         put32(out, gp + 4, 0);
         break;
@@ -422,12 +448,16 @@ SysRet Process::sys_getattrlist(const std::string& path, u32 list, u32 buf, u32 
   // Variable-length data follows the fixed part, each piece padded to 4 bytes.
   for (const Pending& p : pending) {
     const size_t at = out.size();
-    if (p.host_data + p.length <= in.size()) {
+    constexpr char kRootName[] = "Macintosh HD";
+    const u32 length = p.root_name ? sizeof kRootName : p.length;
+    if (p.root_name) {
+      out.insert(out.end(), kRootName, kRootName + sizeof kRootName);
+    } else if (p.host_data + p.length <= in.size()) {
       out.insert(out.end(), in.begin() + (long)p.host_data, in.begin() + (long)(p.host_data + p.length));
     }
     while (out.size() % 4) out.push_back(0);
     put32(out, p.guest_ref, (u32)(at - p.guest_ref));
-    put32(out, p.guest_ref + 4, p.length);
+    put32(out, p.guest_ref + 4, length);
   }
   put32(out, 0, (u32)out.size());
   memcpy(mem_.host(buf), out.data(), out.size() < size ? out.size() : size);
