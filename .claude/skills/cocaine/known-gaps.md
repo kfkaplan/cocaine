@@ -2,10 +2,11 @@
 
 Moved from the README on 2026-11-18. What doesn't work yet, or works only partly, and why. The README keeps a short list of the ones a user would notice.
 
-- PowerPC PEF/CFM launch is experimental. EV Nova 1.0.0 loads and passes
-  monitor initialization on 10.5.6, but stops at "Error initializing
-  Registration Tool!" even when Finder metadata writes succeed; its cause
-  remains unknown. Do not bypass the game's registration.
+- PowerPC PEF/CFM launch is experimental. EV Nova 1.0.0 initializes its
+  registration tool on 10.5.6 with `F_PREALLOCATE` implemented. The tested
+  installation's unregistered trial reports a scenario checksum mismatch;
+  whether the files or the environment cause it is not established.
+  Do not bypass the game's registration or integrity checks.
 - Ghost Recon Demo's extensionless app bundle is recognized and loads via
   LaunchCFMApp. With volume metadata fixed it gets past its installation
   check and reaches its menu using the AGL and GLU hooks. The launcher

@@ -74,8 +74,8 @@ It still needs the build tools below. You can build it yourself with `gui/build.
   need none of this, and a universal app runs its
   PowerPC half unless you ask for `--arch i386`.
 - The programs to run. None come with this repository.
-- Classic PowerPC PEF/CFM support is experimental. EV Nova 1.0.0 gets past
-  loading and monitor setup, but still stops at registration-tool initialization.
+- Classic PowerPC PEF/CFM support is experimental. EV Nova 1.0.0 initializes
+  its registration tool, but the tested scenario files report a checksum mismatch.
   Ghost Recon Demo reaches gameplay, with mouse capture available. The menu
   can be cropped unless the display starts at 800 x 600.
 

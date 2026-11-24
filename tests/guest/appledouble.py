@@ -12,6 +12,11 @@ class AttrList(ctypes.Structure):
                 ("directory", ctypes.c_uint), ("file", ctypes.c_uint),
                 ("fork", ctypes.c_uint)]
 
+class FileStore(ctypes.Structure):
+    _fields_ = [("flags", ctypes.c_uint), ("posmode", ctypes.c_int),
+                ("offset", ctypes.c_longlong), ("length", ctypes.c_longlong),
+                ("bytesalloc", ctypes.c_longlong)]
+
 def attributes(path, common, fileattr):
     attrs = AttrList(5, 0, common, 0, 0, fileattr, 0)
     result = ctypes.create_string_buffer(256)
@@ -29,6 +34,17 @@ finder = "shlbTEST" + "\0" * 24
 fork = "resource data"
 try:
     open(path, "wb").close()
+    fd = os.open(path, os.O_RDWR)
+    try:
+        store = FileStore(0, 3, 0, 4096, 0)
+        assert lib.fcntl(fd, 42, ctypes.byref(store)) == 0
+        assert store.bytesalloc >= 4096
+        assert os.fstat(fd).st_size == 0
+        invalid = FileStore(0, -1, 0, 4096, 0)
+        assert lib.fcntl(fd, 42, ctypes.byref(invalid)) == -1
+        assert lib.fcntl(-1, 42, ctypes.byref(store)) == -1
+    finally:
+        os.close(fd)
     header = struct.pack(">II16sH", 0x51607, 0x20000, "\0" * 16, 2)
     entries = struct.pack(">III", 9, 50, 32) + struct.pack(">III", 2, 82, len(fork))
     f = open(side, "wb")
