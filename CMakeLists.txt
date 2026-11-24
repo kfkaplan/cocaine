@@ -34,6 +34,7 @@ add_executable(cocaine
   src/kernel/ipc.cpp
   src/kernel/iokit.cpp
   src/session/session.cpp
+  src/session/pacing.cpp
   src/session/art.cpp
   src/viewer/viewer.mm
   src/kernel/threads.cpp
@@ -83,7 +84,7 @@ add_test(NAME input-notify COMMAND input-notify-test)
 add_executable(vertex-copy-test tests/vertex-copy.cpp)
 target_include_directories(vertex-copy-test PRIVATE src)
 add_test(NAME vertex-copy COMMAND vertex-copy-test)
-add_executable(viewer-resize-test tests/viewer-resize.mm)
+add_executable(viewer-resize-test tests/viewer-resize.mm src/session/pacing.cpp src/log.cpp)
 target_include_directories(viewer-resize-test PRIVATE src)
 set_source_files_properties(tests/viewer-resize.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 target_link_libraries(viewer-resize-test PRIVATE "-framework Cocoa" "-framework QuartzCore" "-framework CoreGraphics")

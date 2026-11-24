@@ -127,6 +127,11 @@ class Process {
   // Runs until the guest exits or cannot continue. Returns the exit status.
   int run();
 
+  bool low_latency_pacing(bool fallback) const {
+    const uint32_t* state = pacing_control_.load(std::memory_order_acquire);
+    return state ? __atomic_load_n(state, __ATOMIC_RELAXED) != 0 : fallback;
+  }
+
   // Called from the host signal handler when a memory access faults.
   void report_fault(int sig, const void* host_addr, const void* context = nullptr);
   bool guest_writable(u32 addr) const;  // whether the guest may write the page at addr
@@ -369,6 +374,7 @@ class Process {
   u32 bootstrap_port_ = 0;
   bool owns_bootstrap_ = false;
   std::string session_name_;  // empty until the session has a server
+  std::atomic<uint32_t*> pacing_control_{nullptr};
   // For a guest told it is root: the user and group it has since switched
   // itself to (real and effective of each). A daemon drops to a lesser user
   // and takes root back, and expects both to work.

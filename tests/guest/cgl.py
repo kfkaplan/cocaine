@@ -255,6 +255,44 @@ try:
     shown = ctypes.string_at(base + (height // 2) * stride + (width // 2) * 4, 4)
     rgb = shown[1:4] if sys.byteorder == "big" else shown[2::-1]
     assert rgb == "\xff\x00\x00", repr(shown)
+    if len(sys.argv) > 1 and sys.argv[1] == "pacing-order":
+        import threading
+        import time
+        assert gl.CGLSetCurrentContext(0) == 0
+        started = threading.Event()
+        finished = threading.Event()
+        errors = []
+
+        def repaint():
+            if gl.CGLSetCurrentContext(ctx) != 0:
+                errors.append("current context")
+                started.set()
+                return
+            gl.glClearColor(0.0, 1.0, 0.0, 1.0)
+            gl.glClear(0x4000)
+            started.set()
+            if cgl.CGLFlushDrawable(ctx) != 0:
+                errors.append("flush")
+            finished.set()
+            gl.CGLSetCurrentContext(0)
+
+        worker = threading.Thread(target=repaint)
+        worker.start()
+        started.wait(10)
+        assert started.isSet()
+        visible_while_blocked = False
+        deadline = time.time() + 2
+        while time.time() < deadline and not finished.isSet():
+            pixel = ctypes.string_at(base + (height // 2) * stride + (width // 2) * 4, 4)
+            rgb = pixel[1:4] if sys.byteorder == "big" else pixel[2::-1]
+            if rgb == "\x00\xff\x00":
+                visible_while_blocked = True
+                break
+            time.sleep(0.005)
+        worker.join()
+        assert not errors, errors
+        assert visible_while_blocked
+        assert gl.CGLSetCurrentContext(ctx) == 0
     assert cgl.CGLClearDrawable(ctx) == 0
     assert cgl.CGLFlushDrawable(ctx) == 10005
 finally:

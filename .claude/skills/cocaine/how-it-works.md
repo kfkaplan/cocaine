@@ -305,7 +305,13 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   Passing compression through preserves their full source resolution.
   AGL and CGL presentation is capped at 120 frames a second by default to
   reduce latency for app-drawn cursors; `COCAINE_GL_FPS` overrides it,
-  including `60` for the former limit and `0` for no limit.
+  including `60` for the former limit and `0` for no limit. By default the
+  pacing wait precedes presentation. View > Low Latency opts into presenting
+  first and waiting before the swap returns, so a game can sample newer input
+  before drawing; it does not change the frame cap. The viewer and guest
+  processes share a session-scoped control file, so the menu takes effect
+  during a run. `COCAINE_GL_LOW_LATENCY=1` enables it initially and still
+  works without a session.
   Before starting guest code, Snes9x HQ! gets a default `COCAINE_UI_SCALE=1`:
   its game window is partly off-screen at 2x. It uses a 1280x800 guest
   display and doubled viewer pixels to keep menus large. Programs linked to

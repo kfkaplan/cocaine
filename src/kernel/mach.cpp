@@ -31,6 +31,7 @@
 #include "kernel/process.h"
 #include "kernel/display_pixels.h"
 #include "kernel/tunnel.h"
+#include "session/pacing.h"
 #include "viewer/viewer.h"
 
 #include <fcntl.h>
@@ -354,7 +355,14 @@ void Process::setup_ports(Thread& t) {
     bootstrap_port_ = join_session(name, task_port_);
     if (bootstrap_port_) {
       session_name_ = name;
+      if (!pacing_control_.load(std::memory_order_acquire)) {
+        std::string error;
+        uint32_t* pacing = open_session_pacing(name, false, error);
+        if (!pacing) log_warn("low latency session control unavailable: %s", error.c_str());
+        pacing_control_.store(pacing, std::memory_order_release);
+      }
     } else {
+      pacing_control_.store(nullptr, std::memory_order_release);
       log_info("the session %s is gone; starting a new one", name.c_str());
     }
   }
@@ -573,7 +581,8 @@ void Process::share_display(u32 addr, u64 shared_bytes) {
   // The viewer is this same program, started to show the file.
   if (!opt_.self_path.empty() && !getenv("COCAINE_NO_VIEWER")) {
     std::string self = opt_.self_path, flag = "--view", file = path;
-    char* argv[] = {self.data(), flag.data(), file.data(), nullptr};
+    std::string sessionFlag = "--session", session = session_name_;
+    char* argv[] = {self.data(), sessionFlag.data(), session.data(), flag.data(), file.data(), nullptr};
     // What the viewer writes (the mouse) comes back down a pipe and is
     // posted to the guest's input system.
     int ends[2] = {-1, -1};

@@ -1341,6 +1341,7 @@ void Server::shut_down() {
     closedir(d);
   }
   rmdir(shm.c_str());
+  unlink((dir + "/gl-pacing").c_str());
   rmdir(dir.c_str());
   if (syslog_ >= 0) unlink((sysroot_ + "/private/var/run/syslog").c_str());
 }
@@ -1402,7 +1403,10 @@ int Server::run() {
   const int kq = kq_ = kqueue();
   struct kevent64_s ev;
   EV_SET64(&ev, (u64)root_, EVFILT_PROC, EV_ADD | EV_ENABLE, NOTE_EXIT, 0, 0, 0, 0);
-  if (kevent64(kq, &ev, 1, nullptr, 0, 0, nullptr) != 0) return 0;  // it has already gone
+  if (kevent64(kq, &ev, 1, nullptr, 0, 0, nullptr) != 0) {
+    shut_down();  // the root has already gone
+    return 0;
+  }
   EV_SET64(&ev, main_set_, EVFILT_MACHPORT, EV_ADD | EV_ENABLE, 0, 0, 0, 0, 0);
   kevent64(kq, &ev, 1, nullptr, 0, 0, nullptr);
   EV_SET64(&ev, watch_set_, EVFILT_MACHPORT, EV_ADD | EV_ENABLE, 0, 0, 0, 0, 0);

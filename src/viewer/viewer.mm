@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "viewer/viewer.h"
+#include "session/pacing.h"
 
 enum class ViewerScale { Actual, Integer, Fit };
 
@@ -128,6 +129,7 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, ViewerScale m
   bool manualCapture, suppressAutoHold, swallowCaptureKeyUp;
   bool skipMove;                   // the next movement includes putting the pointer back
   double moveX, moveY;             // movement not yet amounting to a whole point
+  uint32_t* pacingControl;
 }
 - (void)show;
 - (void)hold:(bool)hold;
@@ -135,6 +137,7 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, ViewerScale m
 - (void)layoutPicture;
 - (void)sizeToDisplay;
 - (void)chooseScale:(NSMenuItem*)item;
+- (void)toggleLowLatency:(NSMenuItem*)item;
 @end
 
 @implementation CocaineDisplayView
@@ -184,8 +187,15 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, ViewerScale m
   legacyPixelScale = 0;
   moveX = moveY = 0;
   for (NSMenuItem* choice in item.menu.itemArray)
-    choice.state = choice == item ? NSControlStateValueOn : NSControlStateValueOff;
+    if (!choice.isSeparatorItem && choice.action == item.action)
+      choice.state = choice == item ? NSControlStateValueOn : NSControlStateValueOff;
   [self sizeToDisplay];
+}
+- (void)toggleLowLatency:(NSMenuItem*)item {
+  if (!pacingControl) return;
+  const uint32_t value = __atomic_load_n(pacingControl, __ATOMIC_RELAXED) ? 0 : 1;
+  __atomic_store_n(pacingControl, value, __ATOMIC_RELAXED);
+  item.state = value ? NSControlStateValueOn : NSControlStateValueOff;
 }
 // Hands the layer the picture as it is now. The guest's pixels are 32 bits
 // each with the unused byte first, in the guest CPU's byte order. They are
@@ -360,7 +370,7 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, ViewerScale m
 }
 @end
 
-int run_viewer(const char* path) {
+int run_viewer(const char* path, const std::string& session) {
   const int fd = open(path, O_RDONLY);
   struct stat st;
   if (fd < 0 || fstat(fd, &st) != 0 || st.st_size < (off_t)sizeof(DisplayFileHeader)) return 1;
@@ -410,6 +420,8 @@ int run_viewer(const char* path) {
     view->writer = (pid_t)head->writer;
     view->frame = &head->frame;
     view->held = &head->pointer_held;
+    view->pacingControl = open_session_pacing(session, true, error);
+    if (!view->pacingControl) fprintf(stderr, "cocaine: low latency menu unavailable: %s\n", error.c_str());
     view.layer = [CALayer layer];  // a layer of the view's own, which AppKit then leaves alone
     view.wantsLayer = YES;
     view.layer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
@@ -426,6 +438,7 @@ int run_viewer(const char* path) {
     appItem.submenu = appMenu;
     NSMenuItem* viewItem = [menu addItemWithTitle:@"View" action:nil keyEquivalent:@""];
     NSMenu* viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+    viewMenu.autoenablesItems = NO;
     NSArray<NSString*>* titles = @[@"Actual Size", @"Integer Scale", @"Fit"];
     for (NSInteger index = 0; index < (NSInteger)titles.count; index++) {
       NSMenuItem* item = [viewMenu addItemWithTitle:titles[index] action:@selector(chooseScale:)
@@ -434,6 +447,14 @@ int run_viewer(const char* path) {
       item.tag = index;
       item.state = index == (NSInteger)mode ? NSControlStateValueOn : NSControlStateValueOff;
     }
+    [viewMenu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem* latency = [viewMenu addItemWithTitle:@"Low Latency" action:@selector(toggleLowLatency:)
+                                      keyEquivalent:@""];
+    latency.target = view;
+    latency.enabled = view->pacingControl != nullptr;
+    if (view->pacingControl)
+      latency.state = __atomic_load_n(view->pacingControl, __ATOMIC_RELAXED)
+                          ? NSControlStateValueOn : NSControlStateValueOff;
     viewItem.submenu = viewMenu;
     NSApp.mainMenu = menu;
     [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidChangeScreenNotification

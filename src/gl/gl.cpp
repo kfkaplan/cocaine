@@ -44,6 +44,7 @@
 #include "kernel/display_pixels.h"
 #include "kernel/hooks.h"
 #include "kernel/process.h"
+#include "session/pacing.h"
 
 namespace {
 
@@ -696,33 +697,52 @@ void aglUpdateContext(GuestCall& c) {
   c.ret(x != nullptr);
 }
 
-// Frames are shown at most this often (COCAINE_GL_FPS, 120 unless set): a
-// Mac of the time held a game to the display's refresh, and frames past what
-// the screen shows only cost power, twice over, since the guest's window
-// server composites each one.
-void pace() {
+bool low_latency_pacing(GuestCall& c) {
+  static const bool enabled = initial_low_latency_pacing();
+  return c.process.low_latency_pacing(enabled);
+}
+
+// Pace before presentation by default. In low-latency mode, show the frame
+// first and wait before returning to the game, so it can sample newer input.
+thread_local u64 pacing_next = 0;
+
+void pace(bool after = false) {
   static const double interval = [] {
     double fps = 120;
     if (const char* e = getenv("COCAINE_GL_FPS")) fps = atof(e);
     return fps >= 1 ? 1e9 / fps : 0.0;
   }();
   if (interval <= 0) return;
-  static thread_local u64 next = 0;
   const u64 now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-  if (next > now && next - now < 1000000000ull) {
-    struct timespec ts = {0, (long)(next - now)};
+  if (after && !pacing_next) pacing_next = now + (u64)interval;
+  if (pacing_next > now && pacing_next - now <= 1000000000ull) {
+    const u64 delay = pacing_next - now;
+    struct timespec ts = {(time_t)(delay / 1000000000ull), (long)(delay % 1000000000ull)};
     nanosleep(&ts, nullptr);
-    next += (u64)interval;
+    pacing_next += (u64)interval;
   } else {
-    next = now + (u64)interval;  // late, or the first frame: start the beat from here
+    pacing_next = now + (u64)interval;  // late, or the first frame: start the beat from here
   }
+}
+
+void pace_before_presentation(bool after) {
+  static thread_local bool initialized = false, previous_after = false;
+  if (initialized && after != previous_after) {
+    if (after) pace();
+    else pacing_next = 0;
+  }
+  initialized = true;
+  previous_after = after;
+  if (!after) pace();
 }
 
 void aglSwapBuffers(GuestCall& c) {
   Context* x = context_of(c.i());
   if (x && x == t_current) {
-    pace();
+    const bool after = low_latency_pacing(c);
+    pace_before_presentation(after);
     present(c, x);
+    if (after) pace(true);
   }
   c.ret(0);
 }
@@ -1074,8 +1094,11 @@ void cglSetParameter(GuestCall& c) {
 void cglFlushDrawable(GuestCall& c) {
   Context* x = context_of(c.i());
   if (!x || x != t_current) return c.ret(kCGLBadContext);
-  pace();
-  c.ret(present_surface(c, x) ? kCGLNoError : kCGLBadDrawable);
+  const bool after = low_latency_pacing(c);
+  pace_before_presentation(after);
+  const bool shown = present_surface(c, x);
+  if (after) pace(true);
+  c.ret(shown ? kCGLNoError : kCGLBadDrawable);
 }
 
 // ---- GL: state ----------------------------------------------------------------

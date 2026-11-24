@@ -54,7 +54,10 @@ setting up and running for you, in three tabs
   display and doubled viewer pixels where they fit, unless `COCAINE_DISPLAY`
   or `COCAINE_VIEWER_DOUBLE` was set explicitly. OpenGL apps run at up to
   120 frames a second by default to reduce input latency, at the cost of more
-  power; `COCAINE_GL_FPS=60` restores the previous limit. Press Command-Option-M in
+  power; `COCAINE_GL_FPS=60` restores the previous limit. For games that work
+  well with it, View > Low Latency shows frames before the pacing wait
+  instead of after it; it can be changed while the game is running.
+  `COCAINE_GL_LOW_LATENCY=1` enables it at startup. Press Command-Option-M in
   the guest window to capture or release the mouse; capture also releases
   when the window loses focus.
 
@@ -130,7 +133,8 @@ A few settings, as environment variables:
 | `COCAINE_DISPLAY=1280x1024` | the guest's screen size (a conventional resolution fitting your Mac's available logical desktop by default; 1280 x 800 without a screen) |
 | `COCAINE_UI_SCALE=2` | opt into Leopard's unfinished enlarged drawing (1 by default; higher values can break old apps) |
 | `COCAINE_VIEWER_SCALE=fit` | viewer sizing - `actual` (default), `integer` or `fit`; doesn't change guest coordinates |
-| `COCAINE_GL_FPS=0` | lift the 120 frames a second cap on games |
+| `COCAINE_GL_FPS=0` | lift the 120 frames a second cap on games; this may use much more CPU and power |
+| `COCAINE_GL_LOW_LATENCY=1` | enable View > Low Latency at startup; the usual timing remains the default |
 | `COCAINE_WALLPAPER=/path/to/picture.jpg` | the desktop picture, a JPEG or PNG (`images/linen.jpeg` by default - `none` for Leopard's plain grey) |
 | `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the menu bar instead of cocaine's |
 | `COCAINE_NO_VIEWER=1` | run without the window |

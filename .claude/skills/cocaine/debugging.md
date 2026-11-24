@@ -32,6 +32,7 @@ environment variables, none of which change anything unless set:
 | `COCAINE_NAN=1` | report the first places a PowerPC guest's floating point arithmetic makes a NaN out of numbers, with the inputs (interpreted, so slow) |
 | `COCAINE_GL_FRAME=n:file` | save OpenGL frame n, as cocaine read it back from the Mac's GPU, to `file` (raw, A R G B, bottom row first) |
 | `COCAINE_GL_FPS=60` | the most frames a second an OpenGL game is shown at (120 unless set; 0 for no limit) |
+| `COCAINE_GL_LOW_LATENCY=1` | enable View > Low Latency at startup; leave unset for the usual timing. The menu changes it for the running session |
 | `COCAINE_DISPLAY=1280x1024` | the guest display's size (largest conventional mode fitting the host's available logical desktop, allowing room for the viewer's frame; 1280 x 800 with no screen). Resolved once and inherited by the session. Postal 2 keeps its 1024 x 768 default and Snes9x HQ! its 1280 x 800, with doubled viewer pixels; the launcher keeps Ghost Recon Demo at 800 x 600. Tests use 1280 x 1024 |
 | `COCAINE_WALLPAPER=path` | the guest's desktop picture, a JPEG or PNG on this Mac (`images/linen.jpeg` by default, else Leopard's `DefaultDesktop.jpg`); `none` leaves the window server's plain grey (see `src/kernel/wallpaper.cpp`) |
 | `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the guest's menu bar instead of cocaine's (a pile of powder, drawn in each logo's colour into a copy of Leopard's art file, `.cocaine/art/` in the system root; see `src/session/art.cpp`) |
