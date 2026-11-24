@@ -54,9 +54,11 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   as it did before, only bigger. Dynamically linked SDL 1.2 games default to
   1x too: their QuickDraw driver mixes point and pixel coordinates at 2x,
   which can leave software windows blank. Forcing COCAINE_UI_SCALE=2 can
-  bring this back; the default fixes Postal 2's startup warning. Postal 2
-  uses a smaller 1024x768 guest display and doubles pixels in the viewer
-  instead, enlarging the menu without enabling that broken drawing mode.
+  bring this back; the default fixes Postal 2's startup warning. Snes9x HQ!
+  uses a 1280x800 display with 1x UI scaling and doubled viewer pixels because
+  its game window is partly off-screen at 2x.
+  Postal 2 uses a smaller 1024x768 guest display and doubles pixels in the
+  viewer instead, enlarging the menu without enabling that broken drawing mode.
 - A default button's blue pulse stutters at the usual 2560 x 1600: measured
   on 2026-11-20 in VLC's Open Source dialog (PowerPC), the button gets a
   new picture about twice a second, in step with the text cursor's blink,
@@ -71,10 +73,9 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   protections are tracked but not enforced. The exception is the zero page,
   which is arranged to have a host page to itself: null-pointer accesses
   fault as they should.
-- The kernel's own objects are only answered for the process they belong
-  to. A task port sent to another process is a real port there, and that
-  process can ask whose it is, but other calls made on it (reading another
-  process's memory, say) get no reply.
+- A task port sent to another process can answer some kernel calls, including
+  shared-memory mapping and `pid_for_task`, but not all of them (reading
+  another process's memory, for example).
 - IOKit has almost no devices: most searches come back empty. There is a
   power-management root that never announces sleep or wake, and an input
   system with one mouse and one keyboard's worth of events, fed from the
@@ -103,8 +104,10 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   doesn't work.
 - The daemons start afresh with each run that needs them, which costs a
   second or so every time.
-- One process can't get another's task port by process number
-  (`task_for_pid`); the security daemon asks and carries on without.
+- `task_for_pid` finds guest processes in the same session once they have
+  registered their task ports, and accepts only the caller's own task port
+  as its first argument. A spawned process may not have registered yet when
+  `posix_spawn` returns; an exec replaces its guest task port.
 - Each run of cocaine is a session of its own, with its own daemons: two
   apps started separately can't see each other.
 - A guest's own crash (a bad memory access, an illegal instruction) always

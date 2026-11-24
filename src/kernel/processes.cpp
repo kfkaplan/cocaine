@@ -87,6 +87,14 @@ SysRet Process::sys_fork(Thread& t) {
   // The child may want system services, and will inherit only a right to
   // send to the bootstrap port: someone has to be answering it.
   ensure_session_server();
+  int ready[2];
+  if (pipe(ready) != 0) return SysRet::err(errno);
+  if (fcntl(ready[0], F_SETFD, FD_CLOEXEC) < 0 || fcntl(ready[1], F_SETFD, FD_CLOEXEC) < 0) {
+    const int error = errno;
+    close(ready[0]);
+    close(ready[1]);
+    return SysRet::err(error);
+  }
   // Hold the kernel lock across the fork so the child doesn't inherit it
   // locked by a thread that no longer exists there.
   std::unique_lock<std::mutex> lk(kmu_);
@@ -94,8 +102,14 @@ SysRet Process::sys_fork(Thread& t) {
   lock_for_fork(true);
   const pid_t pid = fork();
   lock_for_fork(false);
-  if (pid < 0) return SysRet::err(errno);
+  if (pid < 0) {
+    const int error = errno;
+    close(ready[0]);
+    close(ready[1]);
+    return SysRet::err(error);
+  }
   if (pid == 0) {
+    close(ready[0]);
     // Only the forking thread exists in the child.
     for (const auto& other : threads_) {
       if (other.get() != &t) other->done = true;
@@ -111,11 +125,27 @@ SysRet Process::sys_fork(Thread& t) {
     // that, sets itself up afresh.
     lk.unlock();
     setup_ports(t);
+    const char registered = 1;
+    ssize_t sent;
+    do {
+      sent = write(ready[1], &registered, 1);
+    } while (sent < 0 && errno == EINTR);
+    if (sent != 1) log_warn("could not report the forked task port to the parent: %s", strerror(errno));
+    close(ready[1]);
     t.host_port = pthread_mach_thread_np(pthread_self());
     // Mac OS X reports "I am the child" in the second result register; the C
     // library turns that into the familiar return value of zero.
     return two_results((u32)parent, 1);
   }
+  close(ready[1]);
+  lk.unlock();
+  char registered;
+  ssize_t got;
+  do {
+    got = read(ready[0], &registered, 1);
+  } while (got < 0 && errno == EINTR);
+  close(ready[0]);
+  if (got != 1) log_warn("forked process %d did not finish setting up its task port", (int)pid);
   return two_results((u32)pid, 0);
 }
 

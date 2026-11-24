@@ -206,6 +206,9 @@ class Server {
   // For memory shared by port: how far into its first host page each
   // entry's range starts (see tunnel.h).
   std::map<mach_port_t, u32> entry_offsets_;
+  std::map<pid_t, mach_port_t> tasks_;
+  void register_task(pid_t pid, mach_port_t port);
+  mach_port_t task_for_pid(pid_t pid);
   // On a real Mac the window server is up, and has set up the login session,
   // before any app runs: apps find the security daemon and Launch Services
   // as that session presents them. Here the window server is started by the
@@ -247,7 +250,7 @@ bool Server::take_bootstrap_port() {
   struct {
     mach_msg_header_t h;
     mach_msg_body_t body;
-    mach_msg_port_descriptor_t ports[2];
+    mach_msg_port_descriptor_t ports[3];
     u8 trailer[64];
   } m = {};
   m.h.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND_ONCE);
@@ -260,14 +263,40 @@ bool Server::take_bootstrap_port() {
   mach_port_deallocate(self, first);
   log_debug("asked for the session's ports: result 0x%x, reply %d", kr, m.h.msgh_id);
   if (kr != KERN_SUCCESS || m.h.msgh_id != tunnel::kHandoffReply ||
-      !(m.h.msgh_bits & MACH_MSGH_BITS_COMPLEX) || m.body.msgh_descriptor_count != 2) {
+      !(m.h.msgh_bits & MACH_MSGH_BITS_COMPLEX) || m.body.msgh_descriptor_count != 3) {
     return false;
   }
   bootstrap_ = m.ports[0].name;
   named_ = m.ports[1].name;
+  register_task(root_, m.ports[2].name);
   // Rights to send to the bootstrap port are what this server hands out.
   mach_port_insert_right(self, bootstrap_, bootstrap_, MACH_MSG_TYPE_MAKE_SEND);
   return true;
+}
+
+void Server::register_task(pid_t pid, mach_port_t port) {
+  for (auto it = tasks_.begin(); it != tasks_.end();) {
+    mach_port_type_t type = 0;
+    if (it->first == pid || mach_port_type(mach_task_self(), it->second, &type) != KERN_SUCCESS ||
+        !(type & MACH_PORT_TYPE_SEND)) {
+      mach_port_deallocate(mach_task_self(), it->second);
+      it = tasks_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  tasks_[pid] = port;
+}
+
+mach_port_t Server::task_for_pid(pid_t pid) {
+  const auto it = tasks_.find(pid);
+  if (it == tasks_.end()) return MACH_PORT_NULL;
+  mach_port_type_t type = 0;
+  if (mach_port_type(mach_task_self(), it->second, &type) == KERN_SUCCESS &&
+      (type & MACH_PORT_TYPE_SEND)) return it->second;
+  mach_port_deallocate(mach_task_self(), it->second);
+  tasks_.erase(it);
+  return MACH_PORT_NULL;
 }
 
 // The guest system's directory of users is the one in the system root, which
@@ -801,8 +830,37 @@ void Server::handle(mach_msg_header_t* h) {
       open_gate();
       return;
     }
+    if (h->msgh_id == tunnel::kTaskLookup && !complex && p + sizeof(u32) <= end &&
+        MACH_PORT_VALID(h->msgh_remote_port)) {
+      u32 pid;
+      memcpy(&pid, p, sizeof pid);
+      struct {
+        mach_msg_header_t h;
+        mach_msg_body_t body;
+        mach_msg_port_descriptor_t port;
+      } answer = {};
+      answer.h.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_MOVE_SEND_ONCE, 0) | MACH_MSGH_BITS_COMPLEX;
+      answer.h.msgh_size = sizeof answer;
+      answer.h.msgh_remote_port = h->msgh_remote_port;
+      answer.h.msgh_id = tunnel::kTaskLookupReply;
+      answer.body.msgh_descriptor_count = 1;
+      answer.port.name = task_for_pid((pid_t)pid);
+      answer.port.disposition = MACH_MSG_TYPE_COPY_SEND;
+      answer.port.type = MACH_MSG_PORT_DESCRIPTOR;
+      if (mach_msg(&answer.h, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof answer, 0, MACH_PORT_NULL,
+                   1000, MACH_PORT_NULL) != KERN_SUCCESS) {
+        mach_msg_destroy(&answer.h);
+      }
+      return;
+    }
     if (h->msgh_id == tunnel::kJoin) {
       // A new process of the session, asking for the bootstrap port.
+      if (ports.size() != 1 || !MACH_PORT_VALID(ports[0]) || !MACH_PORT_VALID(h->msgh_remote_port)) {
+        mach_msg_destroy(h);
+        return;
+      }
+      const auto* trailer = (const mach_msg_audit_trailer_t*)(start + round_msg(h->msgh_size));
+      register_task((pid_t)trailer->msgh_audit.val[5], ports[0]);
       struct {
         mach_msg_header_t h;
         mach_msg_body_t body;

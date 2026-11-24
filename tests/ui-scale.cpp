@@ -48,5 +48,18 @@ int main() {
   if (!configure_legacy_ui_scale({"@executable_path/libSDL2-2.0.0.dylib"}, error,
                                  "com.runningwithscissors.postal2") ||
       getenv(display) || getenv(viewer)) return 1;
+  if (unsetenv(name) != 0) return 1;
+  auto snes = [&] {
+    if (configure_legacy_ui_scale({}, error, "com.snes9x.macos.snes9xcustom")) return true;
+    std::fprintf(stderr, "%s\n", error.c_str());
+    return false;
+  };
+  if (!snes() || !getenv(name) || strcmp(getenv(name), "1") != 0 ||
+      !getenv(display) || strcmp(getenv(display), "1280x800") != 0 ||
+      !getenv(viewer) || strcmp(getenv(viewer), "1") != 0) return 1;
+  if (setenv(name, "2", 1) != 0 || setenv(display, "1280x1024", 1) != 0 ||
+      setenv(viewer, "0", 1) != 0) return 1;
+  if (!snes() || strcmp(getenv(name), "2") != 0 ||
+      strcmp(getenv(display), "1280x1024") != 0 || strcmp(getenv(viewer), "0") != 0) return 1;
   return 0;
 }

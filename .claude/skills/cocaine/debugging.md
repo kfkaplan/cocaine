@@ -31,10 +31,10 @@ environment variables, none of which change anything unless set:
 | `COCAINE_NAN=1` | report the first places a PowerPC guest's floating point arithmetic makes a NaN out of numbers, with the inputs (interpreted, so slow) |
 | `COCAINE_GL_FRAME=n:file` | save OpenGL frame n, as cocaine read it back from the Mac's GPU, to `file` (raw, A R G B, bottom row first) |
 | `COCAINE_GL_FPS=60` | the most frames a second an OpenGL game is shown at (120 unless set; 0 for no limit) |
-| `COCAINE_DISPLAY=1280x1024` | the guest display's size (2560 x 1600 unless told otherwise; Postal 2 defaults to 1024 x 768 with doubled viewer pixels; the tests use 1280 x 1024) |
+| `COCAINE_DISPLAY=1280x1024` | the guest display's size (2560 x 1600 unless told otherwise; Postal 2 defaults to 1024 x 768 and Snes9x HQ! to 1280 x 800 with doubled viewer pixels; the tests use 1280 x 1024) |
 | `COCAINE_WALLPAPER=path` | the guest's desktop picture, a JPEG or PNG on this Mac (`images/linen.jpeg` by default, else Leopard's `DefaultDesktop.jpg`); `none` leaves the window server's plain grey (see `src/kernel/wallpaper.cpp`) |
 | `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the guest's menu bar instead of cocaine's (a pile of powder, drawn in each logo's colour into a copy of Leopard's art file, `.cocaine/art/` in the system root; see `src/session/art.cpp`) |
-| `COCAINE_UI_SCALE=1` | how many times bigger Leopard draws everything (2 on a display 2560 or more wide, else 1; dynamically linked SDL 1.2 games default to 1 for QuickDraw compatibility). An explicit value overrides these defaults |
+| `COCAINE_UI_SCALE=1` | how many times bigger Leopard draws everything (2 on a display 2560 or more wide, else 1; dynamically linked SDL 1.2 games and Snes9x HQ! default to 1 for compatibility). An explicit value overrides these defaults |
 | `COCAINE_AL_DUMP=dir` | write each buffer of sound a game hands OpenAL to `dir`, one raw file each, 16-bit samples in this Mac's byte order, named by order, buffer, format and rate (see `src/al/al.cpp`) |
 | `COCAINE_AL_TRACE=1` | log each OpenAL call that leaves an error, and the source, listener and buffer-name calls with their arguments |
 | `COCAINE_AUDIO_DUMP=file` | also write everything the guest plays to `file`, as raw 44.1 kHz stereo 32-bit floats |
@@ -74,6 +74,8 @@ from it on both CPUs and check their output. That includes a shell script
 (`tests/guest/procs.sh`) that exercises processes, pipes and signals, Python
 programs that use threads and fork from them, and `t_ipc`: two processes
 exchanging Mach messages with port rights and out-of-line memory in them.
+`task-for-pid.py` checks self and child task lookup, immediate post-fork
+lookup, exec, process exit, and rejection of processes outside the session.
 Three of Apple's daemons are tested through their clients: the guest system
 must know the person running the tests by name, and one program must hear a
 notification that another posts (`tests/guest/notify.sh`). And Calculator is

@@ -176,7 +176,7 @@ u32 ask_entry(mach_port_t server, mach_port_t entry) {
 }
 
 // Asks the server of the named session for the session's bootstrap port.
-mach_port_t join_session(const std::string& name) {
+mach_port_t join_session(const std::string& name, mach_port_t task) {
   const mach_port_t self = mach_task_self();
   mach_port_t server = MACH_PORT_NULL;
   if (bootstrap_look_up(bootstrap_port, name.c_str(), &server) != KERN_SUCCESS) return MACH_PORT_NULL;
@@ -187,11 +187,16 @@ mach_port_t join_session(const std::string& name) {
     u8 trailer[64];
   } m = {};
   const mach_port_t reply = mach_reply_port();
-  m.h.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND_ONCE);
-  m.h.msgh_size = sizeof(mach_msg_header_t);
+  m.h.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND_ONCE) |
+                  MACH_MSGH_BITS_COMPLEX;
+  m.h.msgh_size = offsetof(decltype(m), trailer);
   m.h.msgh_remote_port = server;
   m.h.msgh_local_port = reply;
   m.h.msgh_id = tunnel::kJoin;
+  m.body.msgh_descriptor_count = 1;
+  m.port.name = task;
+  m.port.disposition = MACH_MSG_TYPE_COPY_SEND;
+  m.port.type = MACH_MSG_PORT_DESCRIPTOR;
   const kern_return_t kr =
       ::mach_msg(&m.h, MACH_SEND_MSG | MACH_RCV_MSG | MACH_SEND_TIMEOUT | MACH_RCV_TIMEOUT,
                  m.h.msgh_size, sizeof m, reply, 3000, MACH_PORT_NULL);
@@ -346,7 +351,7 @@ void Process::setup_ports(Thread& t) {
   const std::string name = session_name_.empty() ? opt_.session : session_name_;
   session_name_.clear();
   if (!name.empty()) {
-    bootstrap_port_ = join_session(name);
+    bootstrap_port_ = join_session(name, task_port_);
     if (bootstrap_port_) {
       session_name_ = name;
     } else {
@@ -716,6 +721,57 @@ u32 Process::mach_trap(Thread& t, u32 num, SysArgs& a) {
       break;
     }
 
+    case 45: {  // task_for_pid(task, pid, task*)
+      const u32 target = a.u(), pid = a.u(), out = a.u();
+      if (!mem_.range_ok(out, 4, GuestMemory::kWrite)) {
+        r = KERN_INVALID_ADDRESS;
+        break;
+      }
+      mem_.w32(out, MACH_PORT_NULL);
+      if (target != task_port_) {
+        r = KERN_INVALID_ARGUMENT;
+        break;
+      }
+      if (pid == (u32)getpid()) {
+        give_send(task_port_);
+        mem_.w32(out, task_port_);
+        r = KERN_SUCCESS;
+        break;
+      }
+      ensure_session_server();
+      struct {
+        mach_msg_header_t h;
+        union {
+          u32 pid;
+          struct {
+            mach_msg_body_t body;
+            mach_msg_port_descriptor_t port;
+          } result;
+        };
+        u8 trailer[64];
+      } m = {};
+      const mach_port_t reply = mach_reply_port();
+      m.h.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, MACH_MSG_TYPE_MAKE_SEND_ONCE);
+      m.h.msgh_size = sizeof(mach_msg_header_t) + sizeof(u32);
+      m.h.msgh_remote_port = bootstrap_port_;
+      m.h.msgh_local_port = reply;
+      m.h.msgh_id = tunnel::kTaskLookup;
+      m.pid = pid;
+      const kern_return_t kr =
+          ::mach_msg(&m.h, MACH_SEND_MSG | MACH_RCV_MSG | MACH_SEND_TIMEOUT | MACH_RCV_TIMEOUT,
+                     m.h.msgh_size, sizeof m, reply, 2000, MACH_PORT_NULL);
+      mach_port_mod_refs(mach_task_self(), reply, MACH_PORT_RIGHT_RECEIVE, -1);
+      if (kr == KERN_SUCCESS && m.h.msgh_id == tunnel::kTaskLookupReply &&
+          (m.h.msgh_bits & MACH_MSGH_BITS_COMPLEX) && m.result.body.msgh_descriptor_count == 1 &&
+          MACH_PORT_VALID(m.result.port.name)) {
+        mem_.w32(out, m.result.port.name);
+        r = KERN_SUCCESS;
+      } else {
+        if (kr == KERN_SUCCESS) mach_msg_destroy(&m.h);
+        r = KERN_FAILURE;
+      }
+      break;
+    }
     case 46: {  // pid_for_task(task, pid*)
       const u32 task = a.u(), out = a.u();
       if (!mem_.range_ok(out, 4)) {

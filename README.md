@@ -21,7 +21,9 @@ The guest system's screen appears in a window on your Mac.
   60 frames a second with music and sound; GL Golf draws its course.
   Postal 2 draws its startup warning, animated intro and menu, using a
   1024 x 768 display with doubled viewer pixels where they fit. Compressed
-  font textures keep their full resolution.
+  font textures keep their full resolution. Snes9x HQ! displays running game
+  graphics with sound; it uses a 1280 x 800 display with doubled viewer pixels
+  to keep its menus large and its game window on screen.
   OpenGL and OpenAL calls go to your Mac's own graphics and sound.
 - **Sound -** VLC plays MP3s through your Mac's speakers.
 - **Mounted disk images -** browsable images mounted under `/Volumes` are

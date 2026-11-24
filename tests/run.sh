@@ -232,6 +232,19 @@ if [ -f "$root/usr/lib/dyld" ]; then
         cat "$log"
         fail=$((fail + 1))
       fi
+      log="$work/task-for-pid-$arch.log"
+      actual=$(PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
+        "$root/usr/bin/python2.5" -c "$(cat "$here/guest/task-for-pid.py")" 2>"$log")
+      status=$?
+      if [ "$status" -eq 0 ] && [ "$actual" = "task_for_pid ok" ]; then
+        echo "ok    $arch task_for_pid"
+        pass=$((pass + 1))
+      else
+        echo "FAIL  $arch task_for_pid: $actual"
+        drop_noise "$log"
+        cat "$log"
+        fail=$((fail + 1))
+      fi
     fi
     # Processes: the shell forks, runs programs and scripts, pipes them
     # together and traps signals; arch starts programs for the other CPU.

@@ -110,7 +110,11 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   message that carries its port rights and out-of-line memory as host
   descriptors (`src/kernel/tunnel.h`). The kernel's own objects (task,
   thread, host, clock) are ports cocaine holds the receiving end of; what a
-  guest sends them is answered in place.
+  guest sends them is answered in place. The session server records each
+  process's guest task port at handoff or join, using the host-stamped
+  sender PID for joins. `task_for_pid` can look up those ports within the
+  session, never host task ports; dead ports are discarded. Fork waits for
+  the child's port to be registered before returning to the parent.
 - **The session server.** `launchd` is the directory of system services on a
   real Mac. cocaine's stand-in (`src/session/`) is a small native program,
   one per run, started the first time a guest needs it and ended when the
@@ -264,9 +268,12 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   AGL and CGL presentation is capped at 120 frames a second by default to
   reduce latency for app-drawn cursors; `COCAINE_GL_FPS` overrides it,
   including `60` for the former limit and `0` for no limit.
-  Before starting guest code, programs linked to SDL 1.2 get a default
-  `COCAINE_UI_SCALE=1`. SDL's old QuickDraw driver locates its software
-  pixels by subtracting a view's point frame from its window's pixel frame.
+  Before starting guest code, Snes9x HQ! gets a default `COCAINE_UI_SCALE=1`:
+  its game window is partly off-screen at 2x. It uses a 1280x800 guest
+  display and doubled viewer pixels to keep menus large. Programs linked to
+  SDL 1.2 also get a default `COCAINE_UI_SCALE=1`. SDL's old QuickDraw driver
+  locates its software pixels by subtracting a view's point frame from its
+  window's pixel frame.
   At 2x that puts Postal 2's warning bitmap 385 rows into the backing store,
   while its flush covers the first 384 rows: a blank part of the window.
   Keeping these programs at 1x makes the coordinates agree, without changing
