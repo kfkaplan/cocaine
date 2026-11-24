@@ -17,7 +17,7 @@
 
 namespace {
 
-// How one attribute is laid out in a getattrlist buffer. The host and the
+// How one attribute is laid out in an attribute buffer. The host and the
 // 32-bit guest agree on everything except times, which are 16 bytes on the
 // host and 8 for the guest, and (for PowerPC) byte order.
 enum AttrType {
@@ -222,15 +222,39 @@ SysRet Process::sys_setattrlist(const std::string& path, u32 list, u32 buf, u32 
   al.fileattr = mem_.r32(list + 16);
   al.forkattr = mem_.r32(list + 20);
   if (al.bitmapcount != 5) return SysRet::err(EINVAL);
-  if (al.commonattr != ATTR_CMN_FNDRINFO || al.volattr || al.dirattr || al.fileattr || al.forkattr) {
+  const u32 supported = ATTR_CMN_SCRIPT | ATTR_CMN_CRTIME | ATTR_CMN_MODTIME |
+                        ATTR_CMN_CHGTIME | ATTR_CMN_ACCTIME | ATTR_CMN_BKUPTIME |
+                        ATTR_CMN_FNDRINFO | ATTR_CMN_OWNERID | ATTR_CMN_GRPID |
+                        ATTR_CMN_ACCESSMASK | ATTR_CMN_FLAGS | ATTR_CMN_UUID | ATTR_CMN_GRPUUID;
+  if ((al.commonattr & ~supported) || al.volattr || al.dirattr || al.fileattr || al.forkattr) {
     log_warn("setattrlist asked for attributes that aren't translated yet "
              "(common %x volume %x dir %x file %x fork %x)",
              al.commonattr, al.volattr, al.dirattr, al.fileattr, al.forkattr);
     return SysRet::err(ENOTSUP);
   }
-  if (size < 32) return SysRet::err(EINVAL);
+  std::vector<u8> data;
+  u32 at = 0;
+  for (const AttrDef& d : kCommon) {
+    if (!(al.commonattr & d.bit)) continue;
+    const u32 guest_size = d.type == kTime ? 8 : host_size(d.type);
+    if (guest_size > size - at) return SysRet::err(EINVAL);
+    const size_t start = data.size();
+    data.resize(start + host_size(d.type));
+    if (d.type == kTime) {
+      const s64 sec = (s32)mem_.r32(buf + at);
+      const s64 nsec = (s32)mem_.r32(buf + at + 4);
+      memcpy(data.data() + start, &sec, 8);
+      memcpy(data.data() + start + 8, &nsec, 8);
+    } else if (d.type == kU32) {
+      const u32 value = mem_.r32(buf + at);
+      memcpy(data.data() + start, &value, 4);
+    } else {
+      memcpy(data.data() + start, mem_.host(buf + at), guest_size);
+    }
+    at += guest_size;
+  }
   const std::string host = host_path(path, !(options & 1));
-  if (setattrlist(host.c_str(), &al, mem_.host(buf), size, options) != 0) return SysRet::err(errno);
+  if (setattrlist(host.c_str(), &al, data.data(), data.size(), options) != 0) return SysRet::err(errno);
   return SysRet::ok();
 }
 

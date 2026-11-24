@@ -197,6 +197,25 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
   };
   // The answer to a driver method, in whichever of the call's shapes.
   auto arg = [&](u32 n) -> u32 { return 32 + 4 * n + 4 <= size ? mem_.r32(msg + 32 + 4 * n) : 0; };
+  // Direct kernel RPCs have not passed through Mach's right transfer. Only
+  // a moved right belongs to the receiver to discard; a copied or made
+  // right leaves the sender's reference untouched.
+  auto discard_port = [&]() -> kern_return_t {
+    if (size < 40) return KERN_INVALID_ARGUMENT;
+    const u32 given = mem_.r32(msg + 28);
+    if (!given) return KERN_SUCCESS;
+    switch (mem_.r8(msg + 38)) {
+      case MACH_MSG_TYPE_MOVE_SEND:
+      case MACH_MSG_TYPE_MOVE_SEND_ONCE:
+        return mach_port_deallocate(mach_task_self(), given);
+      case MACH_MSG_TYPE_COPY_SEND:
+      case MACH_MSG_TYPE_MAKE_SEND:
+      case MACH_MSG_TYPE_MAKE_SEND_ONCE:
+        return KERN_SUCCESS;
+      default:
+        return KERN_INVALID_ARGUMENT;
+    }
+  };
 
   switch (id) {
     case 2800: {  // io_object_get_class
@@ -270,13 +289,15 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
           mach_port_insert_right(mach_task_self(), given, given, MACH_MSG_TYPE_MAKE_SEND);
         }
         hid_notify_ = given;  // told when events are waiting
-      } else if (given) {
-        mach_port_deallocate(mach_task_self(), given);
+      } else {
+        const kern_return_t kr = discard_port();
+        if (kr != KERN_SUCCESS) return code(kr);
       }
       return code(KERN_SUCCESS);
     }
     case 2819: {  // io_connect_map_memory(type, into task, address, size, flags) -> address, size
-      if (size >= 40) mach_port_deallocate(mach_task_self(), mem_.r32(msg + 28));
+      const kern_return_t kr = discard_port();
+      if (kr != KERN_SUCCESS) return code(kr);
       u32 address = 0, bytes = 0;
       if (!io_memory(port, size >= 52 ? mem_.r32(msg + 48) : 0, address, bytes)) return code(kUnsupported);
       Message m(be, local, id + 100);
@@ -424,13 +445,16 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
       log_info("a program asked IOKit for the registry entry %s", path.c_str());
       return code(kNotFound);
     }
-    case 2815:  // io_service_open(owning task, type) -> connection
+    case 2815: {  // io_service_open(owning task, type) -> connection
+      const kern_return_t kr = discard_port();
+      if (kr != KERN_SUCCESS) return code(kr);
       if (port.io != kPowerRoot && port.io != kHIDSystem) return code(kUnsupported);
-      if (size >= 40) mach_port_deallocate(mach_task_self(), mem_.r32(msg + 28));
       return object(port.io == kHIDSystem ? kHIDConnection : kConnection);
+    }
     case 2862: {  // io_service_open_extended(owning task, properties, type) -> result, connection
+      const kern_return_t kr = discard_port();
+      if (kr != KERN_SUCCESS) return code(kr);
       if (port.io != kPowerRoot && port.io != kHIDSystem) return code(kUnsupported);
-      if (size >= 40) mach_port_deallocate(mach_task_self(), mem_.r32(msg + 28));
       u32 made;
       {
         std::lock_guard<std::mutex> lk(kmu_);

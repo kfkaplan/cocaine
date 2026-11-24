@@ -78,6 +78,8 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   AppleDouble sidecars supply missing Finder metadata and read-only resource
   forks without changing the imported files. Parent IDs for immediate system
   root children use the guest volume root ID so Carbon can build paths.
+  `setattrlist` translates 32-bit timestamps and byte order when Carbon sets
+  folder dates and Finder metadata together.
   Volume enumeration uses the imported root's backing volume, including its
   actual read-only status, and adds browsable host mounts under `/Volumes`.
   Carbon's `/.vol/<device>/@` and root folder ID 2 resolve those mounts.
@@ -113,7 +115,10 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   message that carries its port rights and out-of-line memory as host
   descriptors (`src/kernel/tunnel.h`). The kernel's own objects (task,
   thread, host, clock) are ports cocaine holds the receiving end of; what a
-  guest sends them is answered in place. The session server records each
+  guest sends them is answered in place. IOKit requests answered in place
+  consume moved port rights but leave copied rights with the sender; losing
+  the task right prevents the window server from replacing resized backing
+  stores. The session server records each
   process's guest task port at handoff or join, using the host-stamped
   sender PID for joins. `task_for_pid` can look up those ports within the
   session, never host task ports; dead ports are discarded. Fork waits for

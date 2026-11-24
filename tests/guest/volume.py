@@ -46,6 +46,49 @@ mnt_entries = ctypes.string_at(mnt, 272 * nm)
 io = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit")
 io.IOBSDNameMatching.restype = ctypes.c_void_p
 
+task = ctypes.c_uint.in_dll(lib, "mach_task_self_").value
+lib.mach_port_get_refs.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_int,
+                                   ctypes.POINTER(ctypes.c_uint)]
+io.IORegistryEntryFromPath.argtypes = [ctypes.c_uint, ctypes.c_char_p]
+io.IORegistryEntryFromPath.restype = ctypes.c_uint
+io.IOServiceOpen.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,
+                             ctypes.POINTER(ctypes.c_uint)]
+io.IOConnectMapMemory.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,
+                                  ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint),
+                                  ctypes.c_uint]
+power = io.IORegistryEntryFromPath(0, "IOService:/IOResources/IOPMrootDomain")
+assert power
+refs = ctypes.c_uint()
+assert lib.mach_port_get_refs(task, task, 0, ctypes.byref(refs)) == 0
+before = refs.value
+for _ in range(4):
+    connection = ctypes.c_uint()
+    assert io.IOServiceOpen(power, task, 0, ctypes.byref(connection)) == 0
+    address, length = ctypes.c_uint(), ctypes.c_uint()
+    assert io.IOConnectMapMemory(connection, 0, task, ctypes.byref(address),
+                                 ctypes.byref(length), 0) != 0
+    assert io.IOServiceClose(connection) == 0
+    assert lib.mach_port_get_refs(task, task, 0, ctypes.byref(refs)) == 0
+    assert refs.value == before, (before, refs.value)
+
+assert io.IOServiceOpen(power, task, 0, ctypes.byref(connection)) == 0
+port = ctypes.c_uint()
+assert lib.mach_port_allocate(task, 1, ctypes.byref(port)) == 0
+assert lib.mach_port_insert_right(task, port, port, 20) == 0
+reply = lib.mach_reply_port()
+request = struct.pack("=7I", 0x80001513, 52, connection.value, reply, 0, 2819, 1)
+request += struct.pack("=II4B", port.value, 0, 0, 0, 17, 0)
+request += "\0" * 8 + struct.pack("=I", 0)
+message = ctypes.create_string_buffer(128)
+ctypes.memmove(message, request, len(request))
+assert lib.mach_msg(message, 3, len(request), len(message), reply, 0, 0) == 0
+assert struct.unpack("=I", message.raw[32:36])[0] == 0xe00002c7
+assert lib.mach_port_get_refs(task, port, 0, ctypes.byref(refs)) == 0 and refs.value == 0
+assert lib.mach_port_destroy(task, port) == 0
+assert lib.mach_port_destroy(task, reply) == 0
+assert io.IOServiceClose(connection) == 0
+io.IOObjectRelease(power)
+
 def matching_media(bsd):
     matching = io.IOBSDNameMatching(0, 0, bsd)
     assert matching
