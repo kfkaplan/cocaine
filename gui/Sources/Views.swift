@@ -93,22 +93,18 @@ struct LogView: View {
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView {
-        LazyVStack(alignment: .leading, spacing: 1) {
-          ForEach(Array(log.lines.enumerated()), id: \.offset) { item in
-            Text(item.element.isEmpty ? " " : item.element)
-              .font(.system(.caption, design: .monospaced))
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .textSelection(.enabled)
-              .id(item.offset)
-          }
-        }
-        .padding(8)
+        Text(log.lines.map { $0.isEmpty ? " " : $0 }.joined(separator: "\n"))
+          .font(.system(.caption, design: .monospaced))
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .textSelection(.enabled)
+          .id("log")
+          .padding(8)
       }
       .background(Color(nsColor: .textBackgroundColor))
       .clipShape(RoundedRectangle(cornerRadius: 6))
       .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
       .onChange(of: log.lines.count) { _, count in
-        if count > 0 { proxy.scrollTo(count - 1, anchor: .bottom) }
+        if count > 0 { proxy.scrollTo("log", anchor: .bottom) }
       }
     }
   }
