@@ -20,6 +20,8 @@ The guest system's screen appears in a window on your Mac.
   Quitting from a worker thread ends the run even if the main thread is waiting.
 - **Games -** Marble Blast Gold (both halves of the universal build) plays at
   60 frames a second with music and sound; GL Golf draws its course.
+  Marble Blast can switch to fullscreen and back on 10.5.6 PowerPC, inside
+  the guest display.
   Postal 2 draws its startup warning, animated intro and menu, using a
   1024 x 768 display with doubled viewer pixels where they fit. Compressed
   font textures keep their full resolution. Snes9x HQ! displays running game

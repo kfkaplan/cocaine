@@ -38,8 +38,11 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   existing fixed accelerated format is used instead. CGL fullscreen draws
   into the captured guest display (Postal 2's animated intro and menu render).
   AGL fullscreen (`aglSetFullScreen`) isn't done, so AGL games have to
-  be set to play in a window. DrawSprocket runs as guest code; Ghost Recon
-  Demo uses it to select the virtual display's 640x480 menu modes.
+  use a window or DrawSprocket instead. DrawSprocket runs as guest code;
+  Ghost Recon Demo uses it to select the virtual display's 640x480 menu
+  modes, and Marble Blast Gold can switch to fullscreen and back on the
+  checked 10.5.6 PowerPC libraries. Its depth-search loop is corrected in
+  memory so 32-bit requests do not select a 16-bit mode.
 - Sound comes out of one stereo 44.1 kHz device, with no input. The guest's
   Component Manager finds no components at all under cocaine (why is not
   known yet); the output units are supplied instead, but other components

@@ -337,6 +337,22 @@ void Process::note_code_mapping(u32 at, u32 len, int fd, u64 offset) {
         fclose(out);
       }
     }
+  } else if (powerpc && ends_with(img.path, "/DrawSprocket.framework/Versions/A/DrawSprocket") &&
+             read_image(img)) {
+    // Leopard's depth search advances by two, missing 32-bit modes when
+    // only 16/32-bit entries remain. Check the whole loop before fixing
+    // its stride; the virtual driver's first three slots must stay 1x1.
+    const u32 start = img.slide + 0x1E18;
+    const u32 loop[] = {0x7F83D800, 0x409C0014, 0x3BDE0002,
+                        0x7F9EE800, 0x419CFFDC, 0x3BC0FFFF};
+    if (start >= at && (u64)start + sizeof loop <= (u64)at + len) {
+      bool matches = true;
+      for (u32 k = 0; k < sizeof loop / sizeof loop[0]; k++) {
+        if (mem_.r32(start + 4 * k) != loop[k]) matches = false;
+      }
+      if (matches) mem_.w32(start + 8, 0x3BDE0001);  // addi r30, r30, 1
+      else log_warn("this DrawSprocket is not the one cocaine knows: its depth search is unchanged");
+    }
   }
 
   // Is it one whose functions cocaine supplies?

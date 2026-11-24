@@ -182,6 +182,13 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   640x480 RGB555 and 32-bit modes, reusing two unsupported indexed-color
   slots while keeping the existing true-color modes. The first three
   entries must stay 1x1 placeholders: the driver treats them specially.
+  The checked PowerPC DrawSprocket has a depth-search loop that advances
+  by two entries. With just 16/32-bit modes at a resolution, it skips the
+  requested 32-bit mode and returns 16-bit; Marble Blast then fails to
+  reserve the display and crashes after discarding its textures. A checked
+  in-memory instruction patch makes that loop visit every entry, leaving
+  Apple's files on disk untouched. Marble Blast can switch to DrawSprocket
+  fullscreen and back without changing the host display.
   Without real 640x480 modes, DrawSprocket chooses 800x600 for a 640x480
   request and apps such as Ghost Recon draw their menus into a corner.
   These checked in-memory patches are not game-specific and leave viewport
