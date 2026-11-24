@@ -21,7 +21,10 @@ cgl.CGLReleaseContext.argtypes = [uint]
 cgl.CGLDestroyContext.argtypes = [uint]
 cgl.CGLSetParameter.argtypes = [uint, uint, intp]
 cgl.CGLSetFullScreen.argtypes = [uint]
-cgl.CGLSetFullScreenOnDisplay.argtypes = [uint, uint]
+# Leopard 10.5.0's OpenGL doesn't have this one yet; later updates do.
+has_on_display = hasattr(cgl, "CGLSetFullScreenOnDisplay")
+if has_on_display:
+    cgl.CGLSetFullScreenOnDisplay.argtypes = [uint, uint]
 cgl.CGLClearDrawable.argtypes = [uint]
 cgl.CGLFlushDrawable.argtypes = [uint]
 gl.CGLSetCurrentContext.argtypes = [uint]
@@ -203,10 +206,12 @@ display = cg.CGMainDisplayID()
 assert cg.CGDisplayCapture(display) == 0
 try:
     assert cgl.CGLSetFullScreen(0) == 10004
-    assert cgl.CGLSetFullScreenOnDisplay(ctx, 0) == 10006
+    if has_on_display:
+        assert cgl.CGLSetFullScreenOnDisplay(ctx, 0) == 10006
     assert cgl.CGLSetFullScreen(ctx) == 0
     mask = cg.CGDisplayIDToOpenGLDisplayMask(display)
-    assert cgl.CGLSetFullScreenOnDisplay(ctx, mask) == 0
+    if has_on_display:
+        assert cgl.CGLSetFullScreenOnDisplay(ctx, mask) == 0
     gl.glViewport(0, 0, 16, 16)
     gl.glClearColor(1.0, 0.0, 0.0, 1.0)
     gl.glClear(0x4000)

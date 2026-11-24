@@ -31,14 +31,17 @@ feature or gap changes, update the README's short lists too.
   redirected into the system root (`private_home_path`). Keep it that way.
 - `sysroots/`, `test-games/`, `test-canidates/`, `*.dmg`, `*.mp3` and `build/`
   are git-ignored. Delete with the Trash, not `rm -rf`, for anything of the user's.
-- The repo is private on GitHub (`sawyerthemiller/cocaine`). Commit or push
-  only when asked; commits end with the Co-Authored-By line.
+- The repo is public on GitHub (`sawyerthemiller/cocaine`), and others send
+  pull requests: fetch before working, since `main` may have moved. Everything
+  pushed, release notes included, can be read by anyone, so the key rule above
+  matters all the more. Commit or push only when asked; commits end with the
+  Co-Authored-By line.
 
 ## Building and testing
 
 ```bash
 cmake -S . -B build -G Ninja && cmake --build build
-ctest --test-dir build --output-on-failure      # about 5 minutes; 94 guest checks
+ctest --test-dir build --output-on-failure      # about 2 minutes; 117 guest checks
 ```
 
 Filter the user's Mac tweak noise (`AppleSharpener`, `BlurTweak`) out of
@@ -47,7 +50,7 @@ interpreted; `t_x87`/`t_sse` compare against Rosetta, and if Rosetta's
 `oahd` hangs they get stuck: count stuck processes with
 `ps -ax -o stat,command | grep '\.host' | grep -c '^U'`. `tests/run.sh` sets
 `COCAINE_DISPLAY=1280x1024`. Look at `build/Testing/Temporary/LastTest.log`
-for the per-test lines (`94 passed, 0 failed`).
+for the per-test lines (`117 passed, 0 failed`).
 
 ## Running guests without looking at them
 
