@@ -17,6 +17,7 @@ The guest system's screen appears in a window on your Mac.
   on Leopard's own window server, with the mouse, keyboard and scroll wheel.
   Leopard draws at 1x for compatibility; the viewer handles Retina sizing
   without changing the app's coordinates.
+  Quitting from a worker thread ends the run even if the main thread is waiting.
 - **Games -** Marble Blast Gold (both halves of the universal build) plays at
   60 frames a second with music and sound; GL Golf draws its course.
   Postal 2 draws its startup warning, animated intro and menu, using a

@@ -399,7 +399,7 @@ int Process::run() {
     }
   }
 
-  const u64 t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+  run_started_ = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
   int rc = run_thread(main_);
   // If the main thread ended by itself, the process lives on until the last
   // thread does or something calls exit.
@@ -413,18 +413,22 @@ int Process::run() {
     usleep(10000);
   }
   if (exited_) rc = exit_code_;
+  report_stats();
+  return rc;
+}
+
+void Process::report_stats() const {
   if (arch_ == Arch::PPC) {
     ppc_jit_report();
   } else {
     x86_jit_report();
   }
   if (opt_.stats) {
-    const double secs = (double)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0) / 1e9;
+    const double secs = (double)(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - run_started_) / 1e9;
     const u64 n = arch_ == Arch::PPC ? main_.ppc.icount : main_.x86.icount;
     std::fprintf(stderr, "cocaine: %llu guest instructions in %.3f s (%.1f million per second)\n",
                  (unsigned long long)n, secs, secs > 0 ? (double)n / secs / 1e6 : 0.0);
   }
-  return rc;
 }
 
 // region_at gives the next region up when nothing is mapped at the address

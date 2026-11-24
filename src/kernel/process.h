@@ -163,6 +163,7 @@ class Process {
                    bool push_header, u32 header_addr, u32& sp, std::string& err);
   int run_ppc(Thread& t);
   int run_x86(Thread& t);
+  void report_stats() const;
   void dump_registers(const Thread& t) const;
   // The mapped library holding guest address `pc`, and how far into it, for crash reports.
   const char* image_of(u32 pc, u32& offset) const;
@@ -329,6 +330,7 @@ class Process {
   u32 pthread_size_ = 0;   // size of its per-thread structure
   std::atomic<bool> exited_{false};
   int exit_code_ = 0;
+  u64 run_started_ = 0;
   std::set<u32> warned_bsd_, warned_mach_, warned_msg_;
 
   std::map<u32, KPort> kports_;  // the ports that are kernel objects, by name

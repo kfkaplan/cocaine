@@ -630,12 +630,14 @@ SysRet Process::bsd_syscall(Thread& t, u32 num, SysArgs& a) {
 
   SysRet r = SysRet::err(ENOSYS);
   switch (num) {
-    case 1:  // exit
-      exit_code_ = a.i() & 0xFF;
-      exited_ = true;
-      kcv_.notify_all();
-      r = SysRet::none();
-      break;
+    case 1: {  // exit
+      const int status = a.i() & 0xFF;
+      // Another guest thread may be blocked in a host call indefinitely.
+      // End the whole host process, without tearing memory down under it.
+      report_stats();
+      fflush(nullptr);
+      _exit(status);
+    }
 
     // ---- files ----
     case 3:

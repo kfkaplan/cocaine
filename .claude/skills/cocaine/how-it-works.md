@@ -90,7 +90,11 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   libraries:
   - BSD system calls. The host is Darwin too, so most map onto the same host
     call after translating the calling convention, structure layouts and (for
-    PowerPC) byte order. `F_PREALLOCATE` translates the guest's 32-bit
+    PowerPC) byte order. `exit` ends the host process from whichever guest
+    thread called it, after reporting statistics and flushing host output.
+    Waiting for the main thread to notice an exit flag left GameRanger's Quit
+    hung when its main thread was blocked in a Mach receive.
+    `F_PREALLOCATE` translates the guest's 32-bit
     `fstore_t` to the host structure and returns the bytes allocated.
     EV Nova's registration tool needs it to initialize its preference file.
     Where today's kernel answers differently, cocaine
