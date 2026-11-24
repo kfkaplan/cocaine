@@ -117,6 +117,23 @@ if [ -f "$root/usr/lib/dyld" ]; then
     real $arch "$version" /usr/bin/sw_vers -productVersion
     real $arch "Mac OS X" /usr/bin/defaults read /System/Library/CoreServices/SystemVersion ProductName
     if [ -f "$root/usr/bin/python2.5" ]; then
+      if [ "$arch" = i386 ]; then
+        for jit in 1 0; do
+          log="$work/pattern-$jit.log"
+          actual=$(COCAINE_JIT=$jit PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
+            "$root/usr/bin/python2.5" -c "$(cat "$here/guest/pattern.py")" 2>"$log")
+          status=$?
+          if [ "$status" -eq 0 ] && [ "$actual" = "pattern fill ok" ]; then
+            echo "ok    i386 pattern fill (JIT $jit)"
+            pass=$((pass + 1))
+          else
+            echo "FAIL  i386 pattern fill (JIT $jit): $actual"
+            drop_noise "$log"
+            cat "$log"
+            fail=$((fail + 1))
+          fi
+        done
+      fi
       log="$work/file-metadata-$arch.log"
       actual=$(PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
         "$root/usr/bin/python2.5" -c "$(cat "$here/guest/appledouble.py")" 2>"$log")
