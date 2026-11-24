@@ -368,11 +368,6 @@ final class AppModel: ObservableObject {
     return "800x600"
   }
 
-  static func frameRateForRun(_ target: URL, inherited: [String: String]) -> String? {
-    guard inherited["COCAINE_GL_FPS"] == nil, isGhostReconDemo(target) else { return nil }
-    return "120"
-  }
-
   static func viewerDoubleForRun(_ target: URL, inherited: [String: String]) -> String? {
     guard inherited["COCAINE_VIEWER_DOUBLE"] == nil, isGhostReconDemo(target) else { return nil }
     return "1"
@@ -390,10 +385,6 @@ final class AppModel: ObservableObject {
     if let display = Self.displayForRun(target, inherited: Shell.environment) {
       environment["COCAINE_DISPLAY"] = display
       runLog.add("Using an 800 x 600 display for Ghost Recon Demo...")
-    }
-    if let frameRate = Self.frameRateForRun(target, inherited: Shell.environment) {
-      environment["COCAINE_GL_FPS"] = frameRate
-      runLog.add("Using up to 120 frames a second for Ghost Recon Demo...")
     }
     if let doublePixels = Self.viewerDoubleForRun(target, inherited: Shell.environment) {
       environment["COCAINE_VIEWER_DOUBLE"] = doublePixels

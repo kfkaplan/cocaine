@@ -19,6 +19,7 @@
 #include <signal.h>
 #include <thread>
 
+#include "kernel/input_notify.h"
 #include "kernel/mach_message.h"
 #include "kernel/process.h"
 #include "viewer/viewer.h"
@@ -863,12 +864,9 @@ void Process::post_input_event(u32 type, s32 x, s32 y, u32 key, u32 extra, s32 m
   __atomic_thread_fence(__ATOMIC_RELEASE);
   mem_.w32(g + l.tail, next);   // where the next will go
   if (hid_notify_) {
-    mach_msg_header_t h = {};
-    h.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0);
-    h.msgh_size = sizeof h;
-    h.msgh_remote_port = hid_notify_;
-    const kern_return_t kr = ::mach_msg(&h, MACH_SEND_MSG | MACH_SEND_TIMEOUT, sizeof h, 0,
-                                        MACH_PORT_NULL, 50, MACH_PORT_NULL);
+    // A full notification port already has a wake-up waiting; don't block
+    // the input reader behind it while more events arrive.
+    const kern_return_t kr = notify_input(hid_notify_);
     if (kr != KERN_SUCCESS && kr != MACH_SEND_TIMED_OUT) {
       log_warn("could not tell the window server about input: %s", mach_error_string(kr));
     }

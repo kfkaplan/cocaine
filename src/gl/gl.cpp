@@ -40,6 +40,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "gl/vertex_copy.h"
 #include "kernel/display_pixels.h"
 #include "kernel/hooks.h"
 #include "kernel/process.h"
@@ -695,13 +696,13 @@ void aglUpdateContext(GuestCall& c) {
   c.ret(x != nullptr);
 }
 
-// Frames are shown at most this often (COCAINE_GL_FPS, 60 unless set): a
+// Frames are shown at most this often (COCAINE_GL_FPS, 120 unless set): a
 // Mac of the time held a game to the display's refresh, and frames past what
 // the screen shows only cost power, twice over, since the guest's window
 // server composites each one.
 void pace() {
   static const double interval = [] {
-    double fps = 60;
+    double fps = 120;
     if (const char* e = getenv("COCAINE_GL_FPS")) fps = atof(e);
     return fps >= 1 ? 1e9 / fps : 0.0;
   }();
@@ -1875,6 +1876,12 @@ const void* convert(GuestCall& c, Array& a, u32 lo, u32 hi) {
   const int ts = type_size(a.type), es = a.size * ts;
   const u32 stride = a.stride ? (u32)a.stride : (u32)es;
   a.host.resize((size_t)(hi + 1) * (size_t)es);
+  if (es > 0 && hi >= lo && (u64)a.ptr + (u64)hi * stride + (u64)es <= GuestMemory::kSpan) {
+    const u8* src = gp(c, a.ptr + lo * stride);
+    u8* dst = a.host.data() + (size_t)lo * (size_t)es;
+    copy_vertex_array(src, dst, (size_t)hi - lo + 1, (size_t)a.size, (size_t)ts, stride, c.powerpc);
+    return a.host.data();
+  }
   for (u32 i = lo; i <= hi; i++) {
     const u8* src = gp(c, a.ptr + i * stride);
     u8* dst = a.host.data() + (size_t)i * (size_t)es;

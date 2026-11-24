@@ -173,6 +173,26 @@ if [ -f "$root/usr/lib/dyld" ]; then
         cat "$log"
         fail=$((fail + 1))
       fi
+      for fps in default 60 0; do
+        log="$work/gl-pacing-$arch-$fps.log"
+        if [ "$fps" = default ]; then
+          actual=$(env -u COCAINE_GL_FPS PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
+            "$root/usr/bin/python2.5" -c "$(cat "$here/guest/gl-pacing.py")" "$fps" 2>"$log")
+        else
+          actual=$(COCAINE_GL_FPS="$fps" PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
+            "$root/usr/bin/python2.5" -c "$(cat "$here/guest/gl-pacing.py")" "$fps" 2>"$log")
+        fi
+        status=$?
+        if [ "$status" -eq 0 ] && [ "$actual" = "GL pacing ok" ]; then
+          echo "ok    $arch GL pacing ($fps)"
+          pass=$((pass + 1))
+        else
+          echo "FAIL  $arch GL pacing ($fps): $actual"
+          drop_noise "$log"
+          cat "$log"
+          fail=$((fail + 1))
+        fi
+      done
       log="$work/cgl-$arch.log"
       actual=$(PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
         "$root/usr/bin/python2.5" -c "$(cat "$here/guest/cgl.py")" 2>"$log")

@@ -220,6 +220,16 @@ try:
     gl.glDrawRangeElements(4, 0, 2, 3, 0x1403, elements)
     gl.glReadPixels(8, 8, 1, 1, 0x1908, 0x1401, pixel)
     assert tuple(pixel) == (0, 0, 255, 255), tuple(pixel)
+    padded = (ctypes.c_float * 24)()
+    for index, x, y in ((2, -1, -1), (4, 3, -1), (7, -1, 3)):
+        padded[3 * index] = x
+        padded[3 * index + 1] = y
+    sparse = (ctypes.c_ushort * 3)(2, 4, 7)
+    gl.glVertexPointer(2, 0x1406, 12, padded)
+    gl.glColor4f(0.0, 1.0, 0.0, 1.0)
+    gl.glDrawRangeElements(4, 2, 7, 3, 0x1403, sparse)
+    gl.glReadPixels(8, 8, 1, 1, 0x1908, 0x1401, pixel)
+    assert tuple(pixel) == (0, 255, 0, 255), tuple(pixel)
     assert gl.glGetError() == 0
     assert cgl.CGLFlushDrawable(ctx) == 0
     width = cg.CGDisplayPixelsWide(display)

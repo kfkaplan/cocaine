@@ -172,9 +172,8 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   The launcher starts Ghost Recon Demo with an 800x600 display, unless an
   explicit `COCAINE_DISPLAY` is inherited: at the default size its drawable
   is too small for its viewport after it switches display modes. It also
-  sets `COCAINE_GL_FPS=120` unless inherited, to reduce input latency, and
-  `COCAINE_VIEWER_DOUBLE=1` unless inherited, to show each guest pixel twice
-  as wide and high where the screen has room.
+  sets `COCAINE_VIEWER_DOUBLE=1` unless inherited, to show each guest pixel
+  twice as wide and high where the screen has room.
   A polling copier stands down while the hook is active and resumes if it
   stops reporting updates: some games change the display without calling
   `CGXUpdateDisplay`. Those fallback copies can show a partially drawn frame.
@@ -190,7 +189,9 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   window server preferences, which is the difference between a button
   taking 145 ms to react and 15. Mouse and keys are written into the input system's
   shared event queue (`post_input_event` in `src/kernel/iokit.cpp`), where
-  the window server finds them as it would on real hardware, and it decides
+  the window server finds them as it would on real hardware. Its wake-up
+  notification is nonblocking: a full notification port already holds a
+  wake-up, so it must not stall later input. The window server decides
   which app gets what. The viewer sends the Mac's own measure of each
   movement with it, scaled to the current guest display and viewer size.
   When a game captures the pointer for camera controls, its movement instead
@@ -230,7 +231,10 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   for the end of the track. Pixel
   data needs no copy, because the host's swap-bytes pixel setting is kept
   the opposite of the guest's. Vertex arrays are noted when the guest
-  points at them and converted at each draw. Each guest OpenGL context
+  points at them and converted at each draw. Packed PowerPC arrays are
+  byte-swapped in vector-sized blocks; strided arrays are copied and
+  swapped component by component, while Intel arrays need no swap.
+  Each guest OpenGL context
   draws into an offscreen framebuffer on the Mac's GPU. AGL renderer
   queries describe the host's renderers for the virtual main display;
   pixel formats hold host CGL formats, though requested attributes are not
@@ -257,6 +261,9 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   Without S3TC, Postal 2's renderer skips the highest mip of compressed
   textures even for fonts: its 256x256 DXT5 font atlases became 128x128.
   Passing compression through preserves their full source resolution.
+  AGL and CGL presentation is capped at 120 frames a second by default to
+  reduce latency for app-drawn cursors; `COCAINE_GL_FPS` overrides it,
+  including `60` for the former limit and `0` for no limit.
   Before starting guest code, programs linked to SDL 1.2 get a default
   `COCAINE_UI_SCALE=1`. SDL's old QuickDraw driver locates its software
   pixels by subtracting a view's point frame from its window's pixel frame.

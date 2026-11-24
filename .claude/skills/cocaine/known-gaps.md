@@ -42,8 +42,7 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   Component Manager finds no components at all under cocaine (why is not
   known yet); the output units are supplied instead, but other components
   (Sound Manager's, QuickTime's codecs) still can't be found.
-- Games are held to 60 frames a second by default (`COCAINE_GL_FPS`); the
-  launcher uses 120 for Ghost Recon Demo unless explicitly overridden. Past
+- OpenGL games are held to 120 frames a second by default (`COCAINE_GL_FPS`). Past
   the screen's refresh, each
   frame only costs power, twice, since the guest's window server composites
   each one. Even so, a game's window in 2x mode is enlarged by the emulated

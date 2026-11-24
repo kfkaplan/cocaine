@@ -44,10 +44,10 @@ setting up and running for you, in three tabs
 - **Run -** pick an old app or drop one on it, choose Auto, PowerPC or
   Intel, and run it. Closing its window, or pressing stop, ends it. Kill All
   ends every cocaine process on your Mac. Ghost Recon Demo uses an 800 x 600
-  display, doubled viewer pixels where they fit, and up to 120 frames a
-  second for lower input latency, unless `COCAINE_DISPLAY`,
-  `COCAINE_VIEWER_DOUBLE` or `COCAINE_GL_FPS` was set explicitly. The higher frame
-  rate and faster display polling use more power. Press Command-Option-M in
+  display and doubled viewer pixels where they fit, unless `COCAINE_DISPLAY`
+  or `COCAINE_VIEWER_DOUBLE` was set explicitly. OpenGL apps run at up to
+  120 frames a second by default to reduce input latency, at the cost of more
+  power; `COCAINE_GL_FPS=60` restores the previous limit. Press Command-Option-M in
   the guest window to capture or release the mouse; capture also releases
   when the window loses focus.
 
@@ -122,7 +122,7 @@ A few settings, as environment variables:
 |---|---|
 | `COCAINE_DISPLAY=1280x1024` | the guest's screen size (2560 x 1600 by default) |
 | `COCAINE_UI_SCALE=1` | how many times bigger Leopard draws everything (2 by default on a big screen) |
-| `COCAINE_GL_FPS=0` | lift the 60 frames a second cap on games |
+| `COCAINE_GL_FPS=0` | lift the 120 frames a second cap on games |
 | `COCAINE_WALLPAPER=/path/to/picture.jpg` | the desktop picture, a JPEG or PNG (`images/linen.jpeg` by default - `none` for Leopard's plain grey) |
 | `COCAINE_MENU_LOGO=apple` | keep Apple's logo in the menu bar instead of cocaine's |
 | `COCAINE_NO_VIEWER=1` | run without the window |
