@@ -413,7 +413,7 @@ u32 Process::map_memory_entry(u32 entry, u64 addr, u64 size, u32 flags, u64 offs
 
 void guest_display_size(u32& width, u32& height) {
   static const auto size = [] {
-    unsigned w = 2560, h = 1600;
+    unsigned w = 1280, h = 800;
     if (const char* e = getenv("COCAINE_DISPLAY")) {
       unsigned a = 0, b = 0;
       if (sscanf(e, "%ux%u", &a, &b) == 2 && a >= 640 && b >= 480 && a <= 4096 && b <= 4096) {

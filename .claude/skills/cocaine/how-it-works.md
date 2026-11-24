@@ -169,16 +169,42 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   can start, so a window halfway through being redrawn is never shown torn.
   On the checked 10.5.6 PowerPC CoreGraphics, a second hook tracks virtual
   display mode changes, including dimensions and row stride; RGB555 pixels
-  are expanded to the viewer's 32-bit format. The shared file holds the
+  are expanded to the viewer's 32-bit format. Its mode table also gets real
+  640x480 RGB555 and 32-bit modes, reusing two unsupported indexed-color
+  slots while keeping the existing true-color modes. The first three
+  entries must stay 1x1 placeholders: the driver treats them specially.
+  Without real 640x480 modes, DrawSprocket chooses 800x600 for a 640x480
+  request and apps such as Ghost Recon draw their menus into a corner.
+  These checked in-memory patches are not game-specific and leave viewport
+  and scissor semantics alone. The shared file holds the
   current dimensions with its frame sequence, and has room for modes that
   fit the window server's shared framebuffer, including 16-bit modes expanded
-  to 32 bits. When the dimensions change, the viewer resizes its window to
-  two physical screen pixels per guest pixel by default, or one with
-  `COCAINE_VIEWER_DOUBLE=0`, fitting it to the current screen if necessary.
-  It updates its aspect ratio and input mapping too.
+  to 32 bits. Before guest code starts, `configure_host_display` selects the
+  largest conventional resolution fitting the host screen's available logical
+  points, with room for the viewer frame (1280x800 without a screen), unless
+  `COCAINE_DISPLAY` or a game default already chose one. That size is exported
+  in the environment so all session processes agree. Leopard's
+  `AppleDisplayScaleFactor` defaults to 1 regardless of resolution;
+  `COCAINE_UI_SCALE` explicitly opts into its unfinished enlarged drawing.
+  The viewer defaults to one guest pixel per host logical point, fitting down
+  if necessary. Its View menu (Command-1/2/3) selects Actual Size, Integer Scale
+  or Fit, also selectable with `COCAINE_VIEWER_SCALE=actual|integer|fit`.
+  Integer Scale uses the largest whole physical-pixel multiplier that fits;
+  below one physical pixel it falls back to proportional downscaling. Fit
+  uses the whole available rectangle without changing aspect ratio. A
+  separate picture layer leaves black borders where needed; input uses that
+  layer's rectangle, not the whole window. Border clicks are ignored, but
+  button releases still reach the guest. Whole-pixel enlargement uses nearest
+  filtering; fractional enlargement is linear. Layout and filters update
+  when the window is resized or its backing scale changes, without switching
+  the guest mode. Moving to another screen reapplies the selected sizing
+  policy to that screen's available space. A guest mode change resizes the
+  viewer to the selected presentation size on its current screen. Explicit legacy
+  `COCAINE_VIEWER_DOUBLE=0|1` still requests one or two physical pixels per
+  guest pixel unless `COCAINE_VIEWER_SCALE` is set or a View menu mode is chosen.
   The launcher starts Ghost Recon Demo with an 800x600 display, unless an
-  explicit `COCAINE_DISPLAY` is inherited: at the default size its drawable
-  is too small for its viewport after it switches display modes. It also
+  explicit `COCAINE_DISPLAY` is inherited, retaining the older compatibility
+  default while the guest can now switch to its exact 640x480 menu mode. It also
   sets `COCAINE_VIEWER_DOUBLE=1` unless inherited, to show each guest pixel
   twice as wide and high where the screen has room.
   A polling copier stands down while the hook is active and resumes if it
@@ -284,9 +310,10 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   and doubled viewer pixels instead of Leopard's unfinished 2x drawing:
   its menu is larger without breaking the software warning screen. This
   applies to both bundle and executable launches, including the launcher.
-  The viewer uses nearest-neighbor magnification when doubling, so it does
-  not blend neighboring pixels. Explicit `COCAINE_UI_SCALE`,
-  `COCAINE_DISPLAY` and `COCAINE_VIEWER_DOUBLE` still take precedence.
+  These game defaults are retained while applications are tested with the
+  general 1x policy. Explicit `COCAINE_UI_SCALE`, `COCAINE_DISPLAY` and
+  `COCAINE_VIEWER_DOUBLE` still take precedence over game defaults;
+  `COCAINE_VIEWER_SCALE` overrides the viewer's legacy doubling setting.
   CGL pixel format requests,
   like AGL's, are not yet enforced. Those
   QuickDraw calls are guest functions, run from native code

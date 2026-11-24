@@ -106,8 +106,8 @@ struct Incoming {
   u32 audit[8] = {};      // ... and the longer form of that, with its pid
 };
 
-// The size of the guest window server's display, in pixels: 2560 x 1600
-// unless COCAINE_DISPLAY=WIDTHxHEIGHT says otherwise (mach.cpp).
+// The guest display size, resolved at launch into COCAINE_DISPLAY from the
+// host's logical screen size; 1280 x 800 without a host screen (mach.cpp).
 void guest_display_size(u32& width, u32& height);
 // Where the PowerPC comm page holds that size, as two floats, for the window
 // server's own code to read (hooks.cpp patches it to).

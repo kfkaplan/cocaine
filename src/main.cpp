@@ -267,7 +267,7 @@ int main(int argc, char** argv) {
     print_info(exe);
     return 0;
   }
-  if (!configure_legacy_ui_scale(exe.dylibs, err, bundle_id)) {
+  if (!configure_legacy_ui_scale(exe.dylibs, err, bundle_id) || !configure_host_display(err)) {
     std::fprintf(stderr, "cocaine: %s\n", err.c_str());
     return 126;
   }

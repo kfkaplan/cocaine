@@ -350,13 +350,10 @@ static void set_guest_pref(const std::string& path, CFStringRef key, CFPropertyL
 
 void Server::configure_window_server() {
   prepare_menu_logo(sysroot_);
-  // Leopard's hidden "resolution independence": apps draw everything this
-  // many times bigger, so a display with twice the pixels each way shows
-  // things at the size they were, only sharper. COCAINE_UI_SCALE overrides.
+  // Keep Leopard's point and pixel coordinates identical by default.
+  // Its unfinished resolution independence remains an explicit opt-in.
   {
-    u32 w = 0, h = 0;
-    guest_display_size(w, h);
-    double scale = w >= 2560 ? 2.0 : 1.0;
+    double scale = 1.0;
     if (const char* e = getenv("COCAINE_UI_SCALE")) {
       const double v = atof(e);
       if (v >= 1.0 && v <= 3.0) scale = v;

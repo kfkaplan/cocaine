@@ -24,6 +24,9 @@ original = cg.CGDisplayCurrentMode(display)
 assert original
 cf.CFRetain(original)
 exact = uint()
+for depth in (16, 32):
+    small = cg.CGDisplayBestModeForParameters(display, depth, 640, 480, ctypes.byref(exact))
+    assert small and exact.value, "missing exact 640x480 %d-bit mode" % depth
 mode = cg.CGDisplayBestModeForParameters(display, bits, width, height, ctypes.byref(exact))
 assert mode and exact.value
 assert cg.CGDisplaySwitchToMode(display, mode) == 0

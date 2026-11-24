@@ -307,7 +307,8 @@ if [ -f "$root/usr/lib/dyld" ]; then
       if [ "$arch" = ppc ]; then
         if [ "$version" = 10.5.6 ] && [ -f "$root/usr/bin/python2.5" ]; then
           mode_work=$(mktemp -d /tmp/cocaine-mode-test.XXXXXX)
-          for modes in '1280 1024 800 600 16' '800 600 1024 768 32'; do
+          for modes in '1280 1024 800 600 16' '800 600 1024 768 32' \
+                       '1280 1024 640 480 16' '800 600 640 480 32'; do
             set -- $modes
             original_w=$1 original_h=$2 mode_w=$3 mode_h=$4 mode_bits=$5
             first=$mode_work/switched.raw
@@ -336,7 +337,7 @@ if [ -f "$root/usr/lib/dyld" ]; then
           rmdir "$mode_work"
         fi
 
-        # Exercise the default large display, not just Leopard's native size:
+        # Exercise an explicit large display, not just Leopard's native size:
         # a partial or missing CoreGraphics patch used to produce a black screen.
         display_work=$(mktemp -d /tmp/cocaine-display-test.XXXXXX)
         frame=$display_work/frame.raw

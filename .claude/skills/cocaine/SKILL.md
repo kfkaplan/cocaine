@@ -55,9 +55,9 @@ Screenshots are costly; prefer numbers.
 
 - `COCAINE_NO_VIEWER=1` runs with no window. Run in the background, sleep,
   then `pkill -f build/cocaine`.
-- `COCAINE_SCRIPT="wait 25; click 40 22; wait 2; shot /path/a.raw; key 53 0"`
-  plays input (coordinates are display pixels: 2560 x 1600 unless
-  `COCAINE_DISPLAY`; the Apple menu is at about 40,22) and saves the display
+- `COCAINE_SCRIPT="wait 25; click 20 11; wait 2; shot /path/a.raw; key 53 0"`
+  plays input (coordinates are guest display pixels; set `COCAINE_DISPLAY`
+  explicitly for repeatable scripts; the Apple menu is about 20,11 at 1x) and saves the display
   raw: 4 bytes a pixel, unused byte first, then R G B (PowerPC sessions).
   Compare regions of two shots in Python to prove something changed; crop
   a small area into a PNG (zlib + struct, no PIL) only when it must be seen.

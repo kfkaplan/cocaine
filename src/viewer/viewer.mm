@@ -8,7 +8,11 @@
 // The mouse and the keyboard go back the other way down a pipe.
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 #include <fcntl.h>
@@ -19,13 +23,90 @@
 
 #include "viewer/viewer.h"
 
-static NSSize viewer_content_size(uint32_t width, uint32_t height, CGFloat pixelScale, NSScreen* screen) {
-  const CGFloat scale = screen ? screen.backingScaleFactor : 1;
+enum class ViewerScale { Actual, Integer, Fit };
+
+static bool viewer_scale_options(ViewerScale& mode, CGFloat& legacyPixels, std::string& error) {
+  mode = ViewerScale::Actual;
+  legacyPixels = 0;
+  if (const char* scale = getenv("COCAINE_VIEWER_SCALE")) {
+    if (strcmp(scale, "actual") == 0) mode = ViewerScale::Actual;
+    else if (strcmp(scale, "integer") == 0) mode = ViewerScale::Integer;
+    else if (strcmp(scale, "fit") == 0) mode = ViewerScale::Fit;
+    else {
+      error = "COCAINE_VIEWER_SCALE must be actual, integer, or fit";
+      return false;
+    }
+  } else if (const char* doublePixels = getenv("COCAINE_VIEWER_DOUBLE")) {
+    if (strcmp(doublePixels, "0") != 0 && strcmp(doublePixels, "1") != 0) {
+      error = "COCAINE_VIEWER_DOUBLE must be 0 or 1";
+      return false;
+    }
+    legacyPixels = strcmp(doublePixels, "0") == 0 ? 1 : 2;
+  }
+  return true;
+}
+
+static NSSize default_guest_display(NSSize available) {
+  const NSSize modes[] = {{640, 480}, {800, 600}, {1024, 768}, {1152, 864},
+                          {1280, 800}, {1280, 1024}, {1360, 768}, {1440, 900},
+                          {1600, 1200}, {1680, 1050}, {1920, 1080}, {1920, 1200},
+                          {2560, 1440}, {2560, 1600}};
+  NSSize best = modes[0];
+  for (const NSSize mode : modes) {
+    if (mode.width <= available.width && mode.height <= available.height &&
+        mode.width * mode.height > best.width * best.height) best = mode;
+  }
+  return best;
+}
+
+bool configure_host_display(std::string& error) {
+  ViewerScale mode;
+  CGFloat legacyPixels;
+  if (!viewer_scale_options(mode, legacyPixels, error)) return false;
+  if (getenv("COCAINE_DISPLAY")) return true;
+  @autoreleasepool {
+    NSScreen* screen = NSScreen.mainScreen;
+    const NSSize size = screen ? default_guest_display(
+        NSMakeSize(screen.visibleFrame.size.width - 40, screen.visibleFrame.size.height - 60))
+                               : NSMakeSize(1280, 800);
+    if (!screen) fprintf(stderr, "cocaine: no host screen; using a 1280x800 guest display\n");
+    char value[32];
+    snprintf(value, sizeof value, "%.0fx%.0f", size.width, size.height);
+    if (setenv("COCAINE_DISPLAY", value, 0) == 0) return true;
+    error = std::string("cannot set COCAINE_DISPLAY: ") + strerror(errno);
+    return false;
+  }
+}
+
+static NSRect viewer_image_rect(uint32_t width, uint32_t height, NSRect bounds,
+                                CGFloat backing, ViewerScale mode, CGFloat legacyPixels = 0) {
+  if (!width || !height || bounds.size.width <= 0 || bounds.size.height <= 0) return NSZeroRect;
+  const CGFloat fit = std::min(bounds.size.width / width, bounds.size.height / height);
+  CGFloat scale = fit;
+  if (mode == ViewerScale::Actual) scale = std::min(fit, legacyPixels ? legacyPixels / backing : 1);
+  if (mode == ViewerScale::Integer && fit * backing >= 1)
+    scale = std::floor(fit * backing) / backing;
+  const CGFloat w = width * scale, h = height * scale;
+  return NSMakeRect(NSMinX(bounds) + std::floor((bounds.size.width - w) * backing / 2) / backing,
+                    NSMinY(bounds) + std::floor((bounds.size.height - h) * backing / 2) / backing, w, h);
+}
+
+static NSPoint viewer_guest_point(NSPoint point, NSRect image, uint32_t width, uint32_t height) {
+  return NSMakePoint(std::clamp((point.x - NSMinX(image)) * width / image.size.width,
+                                0.0, (double)width - 1),
+                     std::clamp((NSMaxY(image) - point.y) * height / image.size.height,
+                                0.0, (double)height - 1));
+}
+
+static NSSize viewer_content_size(uint32_t width, uint32_t height, ViewerScale mode,
+                                  CGFloat legacyPixels, NSScreen* screen) {
+  const CGFloat backing = screen ? screen.backingScaleFactor : 1;
   const NSRect room = screen ? screen.visibleFrame : NSMakeRect(0, 0, 1280, 800);
-  const CGFloat w = width * pixelScale / scale, h = height * pixelScale / scale;
-  const CGFloat fit = std::min({1.0, std::max(1.0, room.size.width - 40) / w,
-                               std::max(1.0, room.size.height - 60) / h});
-  return NSMakeSize(std::max(1.0, std::floor(w * fit)), std::max(1.0, std::floor(h * fit)));
+  const NSRect available = NSMakeRect(0, 0, std::max(1.0, room.size.width - 40),
+                                     std::max(1.0, room.size.height - 60));
+  const NSRect image = viewer_image_rect(width, height, available, backing, mode, legacyPixels);
+  return NSMakeSize(std::max(1.0, std::ceil(image.size.width)),
+                     std::max(1.0, std::ceil(image.size.height)));
 }
 
 @interface CocaineDisplayView : NSView {
@@ -34,7 +115,9 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, CGFloat pixel
   const DisplayFileHeader* header;
   size_t pixelCapacity;
   int width, height;
-  CGFloat pixelScale;
+  ViewerScale scaleMode;
+  CGFloat legacyPixelScale;
+  CALayer* picture;
   bool bigEndian;
   pid_t writer;
   const volatile uint32_t* frame;  // the file's count of pictures
@@ -48,9 +131,62 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, CGFloat pixel
 }
 - (void)show;
 - (void)hold:(bool)hold;
+- (NSRect)imageRect;
+- (void)layoutPicture;
+- (void)sizeToDisplay;
+- (void)chooseScale:(NSMenuItem*)item;
 @end
 
 @implementation CocaineDisplayView
+- (NSRect)imageRect {
+  const CGFloat backing = self.window.backingScaleFactor ?: 1;
+  return viewer_image_rect(width, height, self.bounds, backing, scaleMode, legacyPixelScale);
+}
+- (void)layoutPicture {
+  const CGFloat backing = self.window.backingScaleFactor ?: 1;
+  const NSRect rect = [self imageRect];
+  const CGFloat physicalScale = width ? rect.size.width * backing / width : 0;
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  picture.frame = rect;
+  picture.magnificationFilter = physicalScale >= 1 && std::abs(physicalScale - std::round(physicalScale)) < 0.001
+                                   ? kCAFilterNearest : kCAFilterLinear;
+  picture.minificationFilter = kCAFilterTrilinear;
+  self.layer.contentsScale = backing;
+  picture.contentsScale = backing;
+  [CATransaction commit];
+}
+- (void)layout {
+  [super layout];
+  [self layoutPicture];
+}
+- (void)viewDidChangeBackingProperties {
+  [super viewDidChangeBackingProperties];
+  [self layoutPicture];
+}
+- (void)sizeToDisplay {
+  NSWindow* window = self.window;
+  NSScreen* screen = window.screen ?: NSScreen.mainScreen;
+  const NSSize size = viewer_content_size(width, height, scaleMode, legacyPixelScale, screen);
+  const NSRect old = window.frame;
+  NSRect next = [window frameRectForContentRect:NSMakeRect(0, 0, size.width, size.height)];
+  next.origin = NSMakePoint(NSMidX(old) - next.size.width / 2, NSMidY(old) - next.size.height / 2);
+  if (screen) {
+    const NSRect room = screen.visibleFrame;
+    next.origin.x = std::clamp(next.origin.x, NSMinX(room), std::max(NSMinX(room), NSMaxX(room) - next.size.width));
+    next.origin.y = std::clamp(next.origin.y, NSMinY(room), std::max(NSMinY(room), NSMaxY(room) - next.size.height));
+  }
+  [window setFrame:next display:YES];
+  [self layoutPicture];
+}
+- (void)chooseScale:(NSMenuItem*)item {
+  scaleMode = (ViewerScale)item.tag;
+  legacyPixelScale = 0;
+  moveX = moveY = 0;
+  for (NSMenuItem* choice in item.menu.itemArray)
+    choice.state = choice == item ? NSControlStateValueOn : NSControlStateValueOff;
+  [self sizeToDisplay];
+}
 // Hands the layer the picture as it is now. The guest's pixels are 32 bits
 // each with the unused byte first, in the guest CPU's byte order. They are
 // copied first: the file goes on changing underneath. The frame number is
@@ -78,19 +214,8 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, CGFloat pixel
   if (width != (int)w || height != (int)h) {
     width = (int)w;
     height = (int)h;
-    NSWindow* window = self.window;
-    NSScreen* screen = window.screen ?: NSScreen.mainScreen;
-    const NSSize size = viewer_content_size(w, h, pixelScale, screen);
-    const NSRect old = window.frame;
-    NSRect next = [window frameRectForContentRect:NSMakeRect(0, 0, size.width, size.height)];
-    next.origin = NSMakePoint(NSMidX(old) - next.size.width / 2, NSMidY(old) - next.size.height / 2);
-    if (screen) {
-      const NSRect room = screen.visibleFrame;
-      next.origin.x = std::clamp(next.origin.x, NSMinX(room), std::max(NSMinX(room), NSMaxX(room) - next.size.width));
-      next.origin.y = std::clamp(next.origin.y, NSMinY(room), std::max(NSMinY(room), NSMaxY(room) - next.size.height));
-    }
-    window.contentAspectRatio = NSMakeSize(width, height);
-    [window setFrame:next display:YES];
+    moveX = moveY = 0;
+    [self sizeToDisplay];
   }
   CGDataProviderRef data = CGDataProviderCreateWithCFData(copy);
   CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
@@ -100,7 +225,7 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, CGFloat pixel
                                    data, NULL, false, kCGRenderingIntentDefault);
   [CATransaction begin];
   [CATransaction setDisableActions:YES];  // no cross-fade between pictures
-  self.layer.contents = (__bridge id)image;
+  picture.contents = (__bridge id)image;
   [CATransaction commit];
   CGImageRelease(image);
   CGColorSpaceRelease(space);
@@ -115,8 +240,10 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, CGFloat pixel
 - (BOOL)acceptsFirstMouse:(NSEvent*)event { return YES; }
 - (void)send:(uint32_t)kind event:(NSEvent*)event {
   const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-  const NSSize size = self.bounds.size;
-  if (size.width <= 0 || size.height <= 0) return;
+  const NSRect image = [self imageRect];
+  if (NSIsEmptyRect(image)) return;
+  if (!holding && (kind == 1 || kind == 3 || kind == 22) && !NSPointInRect(p, image)) return;
+  const NSPoint guest = viewer_guest_point(p, image, width, height);
   int32_t key = 0, extra = 0, more = 0;
   if (kind >= 10 && kind <= 12) {
     // The key code, which Macs have kept the same since, then the modifier
@@ -138,8 +265,8 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, CGFloat pixel
     if (skipMove) {
       skipMove = false;
     } else {
-      moveX += event.deltaX * (holding ? 1 : width / size.width);
-      moveY += event.deltaY * (holding ? 1 : height / size.height);
+      moveX += event.deltaX * (holding ? 1 : width / image.size.width);
+      moveY += event.deltaY * (holding ? 1 : height / image.size.height);
     }
     key = (int32_t)moveX;
     extra = (int32_t)moveY;
@@ -157,8 +284,7 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, CGFloat pixel
     scrollY -= key;
     scrollX -= more;
   }
-  const int32_t record[6] = {(int32_t)kind, (int32_t)(p.x * width / size.width),
-                             (int32_t)((size.height - p.y) * height / size.height), key, extra, more};
+  const int32_t record[6] = {(int32_t)kind, (int32_t)guest.x, (int32_t)guest.y, key, extra, more};
   (void)write(STDOUT_FILENO, record, sizeof record);
 }
 - (void)keyDown:(NSEvent*)event {
@@ -252,17 +378,16 @@ int run_viewer(const char* path) {
   @autoreleasepool {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-    // Two screen pixels to each guest pixel where that fits (a Retina
-    // screen has two of its pixels to a point).
     NSScreen* screen = NSScreen.mainScreen;
     const NSRect room = screen ? screen.visibleFrame : NSMakeRect(0, 0, 1280, 800);
-    const char* doublePixels = getenv("COCAINE_VIEWER_DOUBLE");
-    if (doublePixels && strcmp(doublePixels, "0") != 0 && strcmp(doublePixels, "1") != 0) {
-      fprintf(stderr, "COCAINE_VIEWER_DOUBLE must be 0 or 1\n");
+    ViewerScale mode;
+    CGFloat legacyPixels;
+    std::string error;
+    if (!viewer_scale_options(mode, legacyPixels, error)) {
+      fprintf(stderr, "%s\n", error.c_str());
       return 1;
     }
-    const CGFloat pixelScale = doublePixels && strcmp(doublePixels, "0") == 0 ? 1 : 2;
-    const NSSize size = viewer_content_size(head->width, head->height, pixelScale, screen);
+    const NSSize size = viewer_content_size(head->width, head->height, mode, legacyPixels, screen);
     const CGFloat w = size.width, h = size.height;
     const NSRect frame = NSMakeRect(room.origin.x + (room.size.width - w) / 2,
                                     room.origin.y + (room.size.height - h) / 2, w, h);
@@ -273,25 +398,49 @@ int run_viewer(const char* path) {
                     backing:NSBackingStoreBuffered
                       defer:NO];
     window.title = @"cocaine: Mac OS X 10.5";
-    window.contentAspectRatio = NSMakeSize(head->width, head->height);
     CocaineDisplayView* view = [[CocaineDisplayView alloc] initWithFrame:frame];
     view->pixels = map + sizeof *head;
     view->header = head;
     view->pixelCapacity = (size_t)st.st_size - sizeof *head;
     view->width = (int)head->width;
     view->height = (int)head->height;
-    view->pixelScale = pixelScale;
+    view->scaleMode = mode;
+    view->legacyPixelScale = legacyPixels;
     view->bigEndian = head->big_endian != 0;
     view->writer = (pid_t)head->writer;
     view->frame = &head->frame;
     view->held = &head->pointer_held;
     view.layer = [CALayer layer];  // a layer of the view's own, which AppKit then leaves alone
     view.wantsLayer = YES;
-    view.layer.contentsGravity = kCAGravityResize;
-    view.layer.magnificationFilter = pixelScale == 2 ? kCAFilterNearest : kCAFilterLinear;
-    view.layer.minificationFilter = kCAFilterTrilinear;
     view.layer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+    view.layer.masksToBounds = YES;
+    view->picture = [CALayer layer];
+    [view.layer addSublayer:view->picture];
     window.contentView = view;
+    [view layoutPicture];
+    NSMenu* menu = [[NSMenu alloc] initWithTitle:@""];
+    NSMenuItem* appItem = [menu addItemWithTitle:@"cocaine" action:nil keyEquivalent:@""];
+    NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"cocaine"];
+    NSMenuItem* quit = [appMenu addItemWithTitle:@"Quit cocaine" action:@selector(performClose:) keyEquivalent:@"q"];
+    quit.target = window;
+    appItem.submenu = appMenu;
+    NSMenuItem* viewItem = [menu addItemWithTitle:@"View" action:nil keyEquivalent:@""];
+    NSMenu* viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
+    NSArray<NSString*>* titles = @[@"Actual Size", @"Integer Scale", @"Fit"];
+    for (NSInteger index = 0; index < (NSInteger)titles.count; index++) {
+      NSMenuItem* item = [viewMenu addItemWithTitle:titles[index] action:@selector(chooseScale:)
+                                     keyEquivalent:[NSString stringWithFormat:@"%ld", (long)index + 1]];
+      item.target = view;
+      item.tag = index;
+      item.state = index == (NSInteger)mode ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    viewItem.submenu = viewMenu;
+    NSApp.mainMenu = menu;
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidChangeScreenNotification
+                                                      object:window queue:nil
+                                                  usingBlock:^(NSNotification* note) {
+                                                    [view sizeToDisplay];
+                                                  }];
     [view show];
     window.acceptsMouseMovedEvents = YES;
     [window makeFirstResponder:view];
