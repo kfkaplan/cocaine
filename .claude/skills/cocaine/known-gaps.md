@@ -7,6 +7,14 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   installation's unregistered trial reports a scenario checksum mismatch;
   whether the files or the environment cause it is not established.
   Do not bypass the game's registration or integrity checks.
+- Halo Demo's PEF version reaches gameplay with ARB assembly programs and
+  generic vertex arrays. Foliage renders after fixing stale vertex attributes,
+  and the launcher preset fixes the radar's missing minification filter.
+  Preserving the cursor position during keyboard events fixes the camera
+  jumps reported when holding a movement key through respawn. The same
+  launcher preset fixes dark gun-smoke blocks by limiting compressed
+  textures to their supplied mip chain, keeping their mipmapped filters.
+  The radar, respawn input and smoke fixes were confirmed after restarting.
 - Ghost Recon Demo's extensionless app bundle is recognized and loads via
   LaunchCFMApp. With volume metadata fixed it gets past its installation
   check and reaches its menu using the AGL and GLU hooks. The checked
@@ -34,7 +42,8 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   functions used by the games tested so far: much of OpenGL 1.x, some AGL,
   CGL and GLU calls, and OpenAL 1.1's playback calls. Another game will want others, which
   announce themselves on the first call ("... is not passed through to the
-  Mac yet"). AGL and CGL pixel-format requests are logged but not enforced: the
+  Mac yet"). ARB vertex and fragment programs are advertised for Halo, but
+  some of their entry points remain unsupported. AGL and CGL pixel-format requests are logged but not enforced: the
   existing fixed accelerated format is used instead. CGL fullscreen draws
   into the captured guest display (Postal 2's animated intro and menu render).
   AGL fullscreen (`aglSetFullScreen`) isn't done, so AGL games have to

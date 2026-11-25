@@ -29,6 +29,9 @@ The guest system's screen appears in a window on your Mac.
   to keep its menus large and its game window on screen.
   Ghost Recon Demo's menu uses an exact 640 x 480 mode rather than drawing
   into a corner of a larger display (10.5.6 PowerPC).
+  The launcher enables legacy texture filtering for PowerPC Halo Demo's
+  radar and incomplete compressed smoke textures; command-line runs can use
+  `COCAINE_GL_LEGACY_TEXTURE_FILTER=1`.
   OpenGL and OpenAL calls go to your Mac's own graphics and sound.
 - **Sound -** VLC plays MP3s through your Mac's speakers.
 - **Mounted disk images -** browsable images mounted under `/Volumes` are
@@ -87,7 +90,9 @@ It still needs the build tools below. You can build it yourself with `gui/build.
 - Classic PowerPC PEF/CFM support is experimental. EV Nova 1.0.0 initializes
   its registration tool, but the tested scenario files report a checksum mismatch.
   Ghost Recon Demo reaches gameplay, with mouse capture available. The menu
-  can be cropped unless the display starts at 800 x 600.
+  can be cropped unless the display starts at 800 x 600. Halo Demo reaches
+  gameplay; foliage, radar, gun smoke and held-key camera jumps after respawn
+  are fixed.
 
 ## Building and running
 

@@ -777,7 +777,11 @@ void Process::post_input_event(u32 type, s32 x, s32 y, u32 key, u32 extra, s32 m
   const bool moved = type == kMoved || type == kLeftDragged || type == kRightDragged;
   const bool held = hid_viewer_captured_ || clock_gettime_nsec_np(CLOCK_UPTIME_RAW) < hid_relative_until_;
   s32 dx = 0, dy = 0;
-  if (moved) {
+  if (type == kKeyDown || type == kKeyUp || type == kModifiersChanged) {
+    // Host keyboard events do not carry a meaningful pointer position.
+    x = hid_x_;
+    y = hid_y_;
+  } else if (moved) {
     dx = more == 1 ? (s32)key : x - hid_x_;
     dy = more == 1 ? (s32)extra : y - hid_y_;
     if (held) {  // from where the window server put the pointer (see set_pointer)
@@ -792,7 +796,7 @@ void Process::post_input_event(u32 type, s32 x, s32 y, u32 key, u32 extra, s32 m
       x = std::clamp(hid_x_ + dx, 0, (s32)w - 1);
       y = std::clamp(hid_y_ + dy, 0, (s32)h - 1);
     }
-  } else if (held && type != kKeyDown && type != kKeyUp && type != kModifiersChanged) {
+  } else if (held) {
     x = hid_x_;  // a button or the wheel, where the guest's pointer is
     y = hid_y_;
   }

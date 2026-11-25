@@ -373,6 +373,13 @@ final class AppModel: ObservableObject {
     return "1"
   }
 
+  static func legacyTextureFilterForRun(_ target: URL, inherited: [String: String]) -> String? {
+    guard inherited["COCAINE_GL_LEGACY_TEXTURE_FILTER"] == nil,
+          target.lastPathComponent == "Halo Demo",
+          Architectures.of(target).contains(.classicPEF) else { return nil }
+    return "1"
+  }
+
   func run() async {
     guard let target, !running, isReady else { return }
     remember(target)
@@ -389,6 +396,10 @@ final class AppModel: ObservableObject {
     if let doublePixels = Self.viewerDoubleForRun(target, inherited: Shell.environment) {
       environment["COCAINE_VIEWER_DOUBLE"] = doublePixels
       runLog.add("Doubling the display pixels for Ghost Recon Demo...")
+    }
+    if let legacyFilter = Self.legacyTextureFilterForRun(target, inherited: Shell.environment) {
+      environment["COCAINE_GL_LEGACY_TEXTURE_FILTER"] = legacyFilter
+      runLog.add("Using legacy texture filtering for Halo Demo...")
     }
     let command = RunningCommand(binaryPath, args, environment: environment)
     runCommand = command

@@ -245,8 +245,11 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   the window server finds them as it would on real hardware. Its wake-up
   notification is nonblocking: a full notification port already holds a
   wake-up, so it must not stall later input. The window server decides
-  which app gets what. The viewer sends the Mac's own measure of each
-  movement with it, scaled to the current guest display and viewer size.
+  which app gets what. Keyboard presses, releases, repeats and modifier
+  changes retain the guest's cursor position: host key events can report
+  `(0, 0)` and must not move a captured game's camera. The viewer sends the
+  Mac's own measure of each movement with it, scaled to the current guest
+  display and viewer size.
   When a game captures the pointer for camera controls, its movement instead
   stays in host points, so resizing the viewer does not change camera
   sensitivity. When the window server moves the pointer itself
@@ -287,12 +290,45 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   points at them and converted at each draw. Packed PowerPC arrays are
   byte-swapped in vector-sized blocks; strided arrays are copied and
   swapped component by component, while Intel arrays need no swap.
+  ARB assembly program uploads, environment parameters and generic vertex
+  arrays pass through for Halo Demo; enabled attributes retain their own
+  pointers and normalization and are converted at each draw. The attribute
+  limit is discovered when a context first becomes current, even if a
+  drawable has already created its framebuffer. In fixed-function draws the
+  host uses conventional arrays, with generic attribute zero supplying
+  position only when no conventional position array is enabled. With a
+  vertex program enabled, an invalid stale generic array is ignored if
+  the program doesn't reference it, without requiring a conventional
+  replacement. Invalid arrays referenced by the program still reject the
+  draw and log their pointer, vertex range and vertex-program state.
+  Rectangle textures, framebuffer-to-texture copies, blend equations and
+  four-component texture coordinates pass through. With
+  `COCAINE_GL_LEGACY_TEXTURE_FILTER=1`, newly bound 2D texture names start
+  with linear minification rather than OpenGL's mipmapped default. Explicit
+  minification and magnification filters, rebinding existing textures and
+  other texture targets are unchanged. DXT 2D textures additionally clamp
+  their maximum mip level to the contiguous, correctly sized and formatted
+  chain supplied by the guest. Uploads and base/maximum-level changes
+  recompute this range, retaining the guest's requested maximum as an upper
+  bound so later uploads can extend the chain. Range bookkeeping is shared
+  by sharing contexts and discarded when texture names are deleted.
+  Uncompressed replacements restore the requested maximum. This fixes
+  Halo's dark smoke blocks without dropping its mipmapped particle filters.
+  The launcher enables this only for the PowerPC PEF Halo
+  Demo: its generated radar texture has no mipmaps and never sets its
+  minification filter, producing a white square with the standard default.
+  3D texture uploads honor
+  the guest's unpack state and byte order. The host's ARB vertex and fragment
+  program extensions are advertised for Halo, although some of their entry
+  points are not yet implemented.
   Each guest OpenGL context
-  draws into an offscreen framebuffer on the Mac's GPU. AGL renderer
+  draws into an offscreen framebuffer on the Mac's GPU, with a second color
+  attachment for one auxiliary buffer. AGL renderer
   queries describe the host's renderers for the virtual main display;
   pixel formats hold host CGL formats, though requested attributes are not
   yet enforced. `aglGetVersion` calls the guest's own implementation so
-  applications see the AGL library's version rather than an unfilled answer.
+  applications see the AGL library's version rather than an unfilled answer;
+  `aglGetDrawable` returns the guest port previously set on that context.
   At
   `aglSwapBuffers` cocaine reads the frame back and copies it into the
   game window's own pixels, converting to RGB555 for a 16-bit QuickDraw

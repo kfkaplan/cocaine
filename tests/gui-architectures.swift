@@ -18,6 +18,13 @@ struct ArchitectureTests {
     var pef = Array("Joy!peffpwpc".utf8) + [0, 0, 0, 1] + Array(repeating: UInt8(0), count: 24)
     pef[33] = 3
     try check("pef", pef, [.powerpc, .classicPEF])
+    let halo = dir.appendingPathComponent("Halo Demo")
+    try Data(pef).write(to: halo)
+    precondition(AppModel.legacyTextureFilterForRun(halo, inherited: [:]) == "1")
+    precondition(AppModel.legacyTextureFilterForRun(halo, inherited: ["COCAINE_GL_LEGACY_TEXTURE_FILTER": "0"]) == nil)
+    precondition(AppModel.legacyTextureFilterForRun(dir.appendingPathComponent("pef"), inherited: [:]) == nil)
+    try Data([0xce, 0xfa, 0xed, 0xfe, 7, 0, 0, 0]).write(to: halo)
+    precondition(AppModel.legacyTextureFilterForRun(halo, inherited: [:]) == nil)
     let bundle = dir.appendingPathComponent("Extensionless Application")
     let contents = bundle.appendingPathComponent("Contents")
     let macOS = contents.appendingPathComponent("MacOS")
