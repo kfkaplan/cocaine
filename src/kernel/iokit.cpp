@@ -353,18 +353,21 @@ bool Process::iokit_rpc(u32 name, const KPort& port, u32 msg, u32 size, std::vec
       if (kr != KERN_SUCCESS) return code(kr);
       out.resize(want_numbers < 16 ? want_numbers : 16);
       bytes_out.resize(want_bytes < 4096 ? want_bytes : 4096);
-      Message m(be, local, id + 100);
+      const size_t padded_bytes = (bytes_out.size() + 3) & ~size_t(3);
+      size_t capacity = 40;
+      if (id == 2865) {
+        capacity = 52 + padded_bytes + 8 * out.size();
+      } else if (id == 2822) {
+        capacity = 40 + 4 * out.size();
+      } else if (id == 2823 || id == 2825) {
+        capacity = 40 + padded_bytes;
+      }
+      Message m(be, local, id + 100, false, capacity);
       m.ndr();
       m.put(KERN_SUCCESS);
       auto put_bytes = [&] {
         m.put((u32)bytes_out.size());
-        for (size_t i = 0; i < bytes_out.size(); i += 4) {
-          u8 w[4] = {};
-          for (size_t k = 0; k < 4 && i + k < bytes_out.size(); k++) w[k] = bytes_out[i + k];
-          u32 v;
-          memcpy(&v, w, 4);
-          m.put(be ? __builtin_bswap32(v) : v);  // bytes go out in order
-        }
+        m.put_bytes(bytes_out);
       };
       if (id == 2865) {
         put_bytes();

@@ -401,17 +401,18 @@ int Process::run() {
 
   run_started_ = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
   int rc = run_thread(main_);
+  {
+    std::unique_lock<std::mutex> lk(kmu_);
+    kcv_.wait(lk, [this] {
+      if (exited_) return true;
+      for (const auto& t : threads_) {
+        if (!t->done) return false;
+      }
+      return true;
+    });
+  }
   // If the main thread ended by itself, the process lives on until the last
   // thread does or something calls exit.
-  while (!exited_) {
-    bool alive = false;
-    {
-      std::lock_guard<std::mutex> lk(kmu_);
-      for (const auto& t : threads_) alive |= !t->done;
-    }
-    if (!alive) break;
-    usleep(10000);
-  }
   if (exited_) rc = exit_code_;
   report_stats();
   return rc;

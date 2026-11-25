@@ -162,6 +162,7 @@ struct Context {
   u32 connection = 0, window = 0, surface = 0;
   u32 display = 0;
   u32 private_client_storage = 0;
+  u32 surface_color_space = 0, surface_provider = 0;
   u32 surface_rect = 0, window_rect = 0, guest_frame = 0, guest_frame_size = 0;
   float surface_x = 0, surface_y = 0;
   SurfaceFunctions surface_functions;
@@ -661,6 +662,12 @@ void make_current(Context* x) {
   glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, x->fbo);
 }
 
+void release_surface_provider(GuestCall& c, Context* x) {
+  if (!x->surface_provider) return;
+  c.call(x->surface_functions.release_provider, {x->surface_provider});
+  x->surface_provider = 0;
+}
+
 void aglSetCurrentContext(GuestCall& c) {
   const u32 h = c.i();
   Context* x = h ? context_of(h) : nullptr;
@@ -690,6 +697,9 @@ CGLError release_context(GuestCall& c, u32 handle) {
     glDeleteRenderbuffersEXT(1, &x->depth);
     CGLSetCurrentContext(before);
   }
+  release_surface_provider(c, x);
+  if (x->surface_color_space)
+    c.call(x->surface_functions.release_color, {x->surface_color_space});
   const CGLError error = CGLDestroyContext(x->cgl);
   if (x->guest_frame) c.mem.unmap(x->guest_frame, x->guest_frame_size);
   delete x;
@@ -1054,7 +1064,10 @@ bool present_surface(GuestCall& c, Context* x) {
     return false;
   }
   if (bytes > x->guest_frame_size) {
-    if (x->guest_frame) c.mem.unmap(x->guest_frame, x->guest_frame_size);
+    if (x->guest_frame) {
+      release_surface_provider(c, x);
+      c.mem.unmap(x->guest_frame, x->guest_frame_size);
+    }
     x->guest_frame = c.mem.map_alone(bytes, GuestMemory::kRead | GuestMemory::kWrite, 0x10000000u, 0xC0000000u);
     x->guest_frame_size = x->guest_frame ? (u32)bytes : 0;
   }
@@ -1080,8 +1093,10 @@ bool present_surface(GuestCall& c, Context* x) {
   }
   const u32 ctx = x->display ? c.call(fn.display_context, {x->display})
                              : c.call(fn.window_context, {x->connection, x->window, 0});
-  const u32 space = c.call(fn.color_space, {});
-  const u32 source = c.call(fn.provider, {0, x->guest_frame, (u32)bytes, 0});
+  if (!x->surface_color_space) x->surface_color_space = c.call(fn.color_space, {});
+  if (!x->surface_provider) x->surface_provider = c.call(fn.provider, {0, x->guest_frame, (u32)bytes, 0});
+  const u32 space = x->surface_color_space;
+  const u32 source = x->surface_provider;
   u32 image = 0;
   if (ctx && space && source) {
     const u32 bitmap = (u32)kCGImageAlphaNoneSkipFirst |
@@ -1099,8 +1114,6 @@ bool present_surface(GuestCall& c, Context* x) {
     say_once("OpenGL: cannot create an image for a Cocoa surface");
   }
   if (image) c.call(fn.release_image, {image});
-  if (source) c.call(fn.release_provider, {source});
-  if (space) c.call(fn.release_color, {space});
   // CGDisplayGetDrawingContext lends the display's context; only window
   // contexts created above belong to us.
   if (ctx && !x->display) c.call(fn.release_context, {ctx});
@@ -1670,9 +1683,19 @@ void glCallLists_(GuestCall& c) {
     glCallLists(count, type, src);
     return;
   }
-  std::vector<u8> converted((size_t)count * size);
-  for (int i = 0; i < count; i++)
-    for (int j = 0; j < size; j++) converted[(size_t)i * size + j] = src[(size_t)i * size + size - 1 - j];
+  const size_t bytes = (size_t)count * size;
+  auto convert = [&](u8* dst) {
+    for (int i = 0; i < count; i++)
+      for (int j = 0; j < size; j++) dst[(size_t)i * size + j] = src[(size_t)i * size + size - 1 - j];
+  };
+  u8 small[16];
+  if (bytes <= sizeof small) {
+    convert(small);
+    glCallLists(count, type, small);
+    return;
+  }
+  std::vector<u8> converted(bytes);
+  convert(converted.data());
   glCallLists(count, type, converted.data());
 }
 void glPushClientAttrib_(GuestCall& c) {
@@ -2338,15 +2361,29 @@ bool prepare_arrays(GuestCall& c, u32 lo, u32 hi) {
   Context* x = t_current;
   if (!x) return false;
   const bool vertex_program = glIsEnabled(GL_VERTEX_PROGRAM_ARB);
+  auto array_pointer = [&](Array& a, GLsizei& stride, bool checked) -> const void* {
+    stride = 0;
+    if ((!c.powerpc || type_size(a.type) == 1) && a.ptr && a.stride >= 0) {
+      const u64 element = (u64)a.size * type_size(a.type);
+      const u64 source_stride = a.stride ? (u32)a.stride : element;
+      const u64 end = (u64)a.ptr + (u64)hi * source_stride + element;
+      if (element && end <= GuestMemory::kSpan &&
+          ((checked && lo == 0) || c.mem.range_ok(a.ptr, end - a.ptr, GuestMemory::kRead))) {
+        stride = a.stride;
+        return gp(c, a.ptr);
+      }
+    }
+    return convert(c, a, lo, hi);
+  };
   for (size_t i = 0; i < x->attribs.size(); i++) {
     Array& a = x->attribs[i];
     if (!a.on) continue;
     // Fixed-function draws use conventional arrays, with generic position as a fallback.
     if (!vertex_program && (i != 0 || x->vertex.on)) continue;
     const u64 element = (u64)a.size * type_size(a.type);
-    const u64 stride = a.stride ? (u32)a.stride : element;
-    const u64 start = (u64)a.ptr + (u64)lo * stride;
-    const u64 end = (u64)a.ptr + (u64)hi * stride + element;
+    const u64 step = a.stride ? (u32)a.stride : element;
+    const u64 start = (u64)a.ptr + (u64)lo * step;
+    const u64 end = (u64)a.ptr + (u64)hi * step + element;
     if (!a.ptr || end > GuestMemory::kSpan || start >= end ||
         !c.mem.range_ok((u32)start, end - start, GuestMemory::kRead)) {
       if (vertex_program && !program_uses_generic_attribute(i)) continue;
@@ -2354,19 +2391,34 @@ bool prepare_arrays(GuestCall& c, u32 lo, u32 hi) {
                i, a.ptr, lo, hi, vertex_program ? "enabled" : "disabled");
       return false;
     }
-    glVertexAttribPointerARB((GLuint)i, a.size, a.type, a.normalized, 0, convert(c, a, lo, hi));
+    GLsizei stride;
+    const void* ptr = array_pointer(a, stride, true);
+    glVertexAttribPointerARB((GLuint)i, a.size, a.type, a.normalized, stride, ptr);
   }
-  if (x->vertex.on && x->vertex.ptr) glVertexPointer(x->vertex.size, x->vertex.type, 0, convert(c, x->vertex, lo, hi));
-  if (x->normal.on && x->normal.ptr) glNormalPointer(x->normal.type, 0, convert(c, x->normal, lo, hi));
-  if (x->color_array.on && x->color_array.ptr)
-    glColorPointer(x->color_array.size, x->color_array.type, 0, convert(c, x->color_array, lo, hi));
+  if (x->vertex.on && x->vertex.ptr) {
+    GLsizei stride;
+    const void* ptr = array_pointer(x->vertex, stride, false);
+    glVertexPointer(x->vertex.size, x->vertex.type, stride, ptr);
+  }
+  if (x->normal.on && x->normal.ptr) {
+    GLsizei stride;
+    const void* ptr = array_pointer(x->normal, stride, false);
+    glNormalPointer(x->normal.type, stride, ptr);
+  }
+  if (x->color_array.on && x->color_array.ptr) {
+    GLsizei stride;
+    const void* ptr = array_pointer(x->color_array, stride, false);
+    glColorPointer(x->color_array.size, x->color_array.type, stride, ptr);
+  }
   bool switched = false;
   for (int u = 0; u < 8; u++) {
     Array& a = x->tex[u];
     if (!a.on || !a.ptr) continue;
     glClientActiveTextureARB(GL_TEXTURE0 + (GLenum)u);
     switched = true;
-    glTexCoordPointer(a.size, a.type, 0, convert(c, a, lo, hi));
+    GLsizei stride;
+    const void* ptr = array_pointer(a, stride, false);
+    glTexCoordPointer(a.size, a.type, stride, ptr);
   }
   if (switched) glClientActiveTextureARB(GL_TEXTURE0 + (GLenum)x->client_unit);
   return true;
@@ -2383,17 +2435,20 @@ void glDrawArrays_(GuestCall& c) {
 void draw_elements(GuestCall& c, GLenum mode, GLsizei count, GLenum type, u32 indices) {
   const u8* in = gp(c, indices);
   if (count <= 0 || !in) return;
+  const bool direct = type == GL_UNSIGNED_BYTE ||
+                      (!c.powerpc && (type == GL_UNSIGNED_SHORT || type == GL_UNSIGNED_INT));
   static thread_local std::vector<GLuint> idx;
-  idx.resize((size_t)count);
+  if (!direct) idx.resize((size_t)count);
   u32 lo = 0xFFFFFFFFu, hi = 0;
   for (GLsizei k = 0; k < count; k++) {
     const u32 v = type == GL_UNSIGNED_BYTE ? in[k] : type == GL_UNSIGNED_SHORT ? rd16(in + 2 * k) : rd32(in + 4 * k);
-    idx[(size_t)k] = v;
+    if (!direct) idx[(size_t)k] = v;
     lo = std::min(lo, v);
     hi = std::max(hi, v);
   }
   if (!prepare_arrays(c, lo, hi)) return;
-  glDrawElements(mode, count, GL_UNSIGNED_INT, idx.data());
+  const void* elements = direct ? static_cast<const void*>(in) : static_cast<const void*>(idx.data());
+  glDrawElements(mode, count, direct ? type : GL_UNSIGNED_INT, elements);
 }
 void glDrawElements_(GuestCall& c) {
   const GLenum mode = c.i();

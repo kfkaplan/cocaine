@@ -523,6 +523,8 @@ class Translator : Emitter {
   void cmp_imm(int rn, u32 v) {
     if (v < 4096) {
       e(cmpw_i(rn, v));
+    } else if ((v & 0xFFF) == 0 && (v >> 12) < 4096) {
+      e(subsw_i(ZR, rn, v >> 12, true));
     } else {
       imm(S1, v);
       e(cmpw(rn, S1));
@@ -1106,10 +1108,13 @@ bool Translator::one(u32 insn) {
     case 12:
     case 13: {  // addic, addic.
       const int a = R(ra, T0), d = D(rd, T0);
-      if ((u32)simm < 4096) {
-        e(addsw_i(d, a, (u32)simm));
+      const u32 value = (u32)simm;
+      if (value < 4096) {
+        e(addsw_i(d, a, value));
+      } else if ((value & 0xFFF) == 0 && (value >> 12) < 4096) {
+        e(addsw_i(d, a, value >> 12, true));
       } else {
-        imm(T1, (u32)simm);
+        imm(T1, value);
         e(addsw(d, a, T1));
       }
       W(rd, d);

@@ -47,6 +47,8 @@ constexpr u32 fourcc(const char (&s)[5]) {
 constexpr u32 kSystem = 1, kDevice = 0x100, kStream = 0x200;
 constexpr double kRate = 44100.0;
 constexpr u32 kChannels = 2;
+constexpr u32 kRingFrames = 16384;
+static_assert((kRingFrames & (kRingFrames - 1)) == 0);
 
 // Errors, as Core Audio spells them.
 constexpr u32 kNoErr = 0;
@@ -97,7 +99,7 @@ struct Device {
   bool worker = false, running = false, stopping = false;
 
   // The ring between the guest's IO procedures and the native output.
-  std::vector<float> ring = std::vector<float>(16384 * kChannels);
+  std::vector<float> ring = std::vector<float>((size_t)kRingFrames * kChannels);
   size_t head = 0, tail = 0;  // in frames, ever-increasing
   std::atomic<u64> played{0};
   u64 start_host = 0;
@@ -123,10 +125,9 @@ OSStatus render(void*, AudioUnitRenderActionFlags*, const AudioTimeStamp*, UInt3
   float* dst = (float*)out->mBuffers[0].mData;
   {
     std::lock_guard<std::mutex> lk(g_dev.mu);
-    const size_t cap = g_dev.ring.size() / kChannels;
     for (UInt32 f = 0; f < frames; f++) {
       if (g_dev.tail < g_dev.head) {
-        const size_t at = (g_dev.tail % cap) * kChannels;
+        const size_t at = (g_dev.tail & (kRingFrames - 1)) * kChannels;
         dst[2 * f] = g_dev.ring[at] * g_dev.volume;
         dst[2 * f + 1] = g_dev.ring[at + 1] * g_dev.volume;
         g_dev.tail++;
@@ -583,9 +584,11 @@ void worker_main(GuestCall& c) {
     out_ts = c.scratch(64), flags = c.scratch(16), data = c.scratch(kDataBytes);
   }
   std::vector<float> mix;
+  std::vector<Proc> procs;
+  std::vector<Unit> units;
   for (;;) {
-    std::vector<Proc> procs;
-    std::vector<Unit> units;
+    procs.clear();
+    units.clear();
     u32 frames;
     size_t queued = 0;
     {
@@ -654,9 +657,8 @@ void worker_main(GuestCall& c) {
     }
     {
       std::lock_guard<std::mutex> lk(g_dev.mu);
-      const size_t cap = g_dev.ring.size() / kChannels;
       for (u32 f = 0; f < frames; f++) {
-        const size_t at = (g_dev.head % cap) * kChannels;
+        const size_t at = (g_dev.head & (kRingFrames - 1)) * kChannels;
         g_dev.ring[at] = mix[2 * f];
         g_dev.ring[at + 1] = mix[2 * f + 1];
         g_dev.head++;

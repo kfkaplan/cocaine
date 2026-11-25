@@ -257,6 +257,7 @@ class Process {
   u64 display_source_bytes_ = 0, display_file_pixels_ = 0;
   u32 display_w_ = 0, display_h_ = 0;
   u32 display_stride_ = 0, display_bits_ = 32;
+  std::vector<u8> display_conversion_;
   std::mutex publish_mu_;
   std::atomic<u64> hook_published_ns_{0};  // when publish_display last ran
   bool publish_changed();  // with publish_mu_ held

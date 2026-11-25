@@ -665,7 +665,12 @@ void Server::launch(Job& job) {
 void Server::send(mach_port_t to, s32 id, bool be, const std::vector<u8>& guest, mach_port_t port,
                   mach_msg_type_name_t how) {
   if (!MACH_PORT_VALID(to)) return;
-  std::vector<u8> out(sizeof(mach_msg_header_t) + sizeof(mach_msg_body_t));
+  thread_local std::vector<u8> out;
+  const size_t head = sizeof(mach_msg_header_t) + sizeof(mach_msg_body_t);
+  const size_t extra = (port ? sizeof(mach_msg_port_descriptor_t) : 0) + sizeof(tunnel::Meta) + guest.size();
+  out.clear();
+  out.reserve(head + extra + 3);
+  out.resize(head, 0);
   auto add = [&](const void* p, size_t n) {
     out.insert(out.end(), (const u8*)p, (const u8*)p + n);
   };
