@@ -96,3 +96,6 @@ add_test(NAME arm64-encodings
   COMMAND sh ${CMAKE_SOURCE_DIR}/tests/a64-check.sh ${CMAKE_BINARY_DIR}/a64-work)
 add_test(NAME guest-programs
   COMMAND sh ${CMAKE_SOURCE_DIR}/tests/run.sh $<TARGET_FILE:cocaine> ${CMAKE_BINARY_DIR}/test-work)
+add_test(NAME guest-network
+  COMMAND sh ${CMAKE_SOURCE_DIR}/tests/network.sh $<TARGET_FILE:cocaine>)
+set_tests_properties(guest-network PROPERTIES SKIP_RETURN_CODE 77)

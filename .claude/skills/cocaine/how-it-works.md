@@ -94,6 +94,14 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
     call after translating the calling convention, structure layouts and (for
     PowerPC) byte order. `exit` ends the host process from whichever guest
     thread called it, after reporting statistics and flushing host output.
+    Sockets pass through to the host, including `FIONBIO` and
+    `SIOCGIFFLAGS` with guest byte order translated. For PowerPC, ordinary
+    reads and writes on routing sockets translate the route header and
+    native-order sockaddr fields; descriptor inspection also handles
+    duplicated and inherited sockets. Since guest configd runs without network
+    plug-ins, a read-only open of a missing guest `/var/run/resolv.conf` gets
+    an unlinked, read-only snapshot of the host's file. Existing guest
+    configuration wins; other operations never redirect to the host file.
     The named CPU, bus and time-base frequency sysctls return 64-bit values,
     while their legacy numeric MIBs return 32-bit values, as on Leopard.
     Waiting for the main thread to notice an exit flag left GameRanger's Quit

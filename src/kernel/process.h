@@ -196,7 +196,10 @@ class Process {
   SysRet sys_getattrlist(const std::string& path, u32 list, u32 buf, u32 size, u32 options);
   SysRet sys_setattrlist(const std::string& path, u32 list, u32 buf, u32 size, u32 options);
   int open_appledouble_fork(const std::string& host, int flags);
+  int open_resolver_config(const std::string& host, int flags);
   SysRet sys_socket_call(u32 num, SysArgs& a);
+  int route_socket(int fd) const;
+  SysRet sys_route_io(int fd, u32 buf, u32 len, bool writing);
   void write_stat(u32 buf, const struct stat& st, bool wide);
   u32 machdep_call(Thread& t, u32 num, SysArgs& a);
   void ppc_fast_trap(Thread& t, u32 num);

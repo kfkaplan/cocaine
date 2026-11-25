@@ -144,6 +144,75 @@ bool system_root_file(const std::string& host, const std::string& root) {
 
 }  // namespace
 
+int Process::open_resolver_config(const std::string& host, int flags) {
+  if (opt_.sysroot.empty() || host != opt_.sysroot + "/private/var/run/resolv.conf" ||
+      (flags & ~O_CLOEXEC) != O_RDONLY) {
+    errno = ENOENT;
+    return -1;
+  }
+  // A dangling guest symlink is an explicit configuration, not a missing file.
+  struct stat st;
+  if (lstat(host.c_str(), &st) == 0) {
+    errno = ENOENT;
+    return -1;
+  }
+  if (errno != ENOENT) return -1;
+  int source = open("/var/run/resolv.conf", O_RDONLY);
+  if (source < 0) {
+    log_warn("cannot open host resolver configuration: %s", strerror(errno));
+    return -1;
+  }
+  char tmp[PATH_MAX];
+  if (!confstr(_CS_DARWIN_USER_TEMP_DIR, tmp, sizeof tmp)) {
+    close(source);
+    errno = EIO;
+    return -1;
+  }
+  std::string name = std::string(tmp) + "cocaine-resolv-XXXXXX";
+  int fd = mkstemp(name.data());
+  if (fd < 0) {
+    const int err = errno;
+    close(source);
+    errno = err;
+    return -1;
+  }
+  auto fail = [&](int err) {
+    close(source);
+    close(fd);
+    if (unlink(name.c_str()) != 0)
+      log_warn("cannot remove temporary resolver configuration %s: %s", name.c_str(), strerror(errno));
+    errno = err;
+    return -1;
+  };
+  std::array<char, 4096> data;
+  for (;;) {
+    const ssize_t n = read(source, data.data(), data.size());
+    if (n < 0) return fail(errno);
+    if (n == 0) break;
+    size_t written = 0;
+    while (written < (size_t)n) {
+      const ssize_t w = write(fd, data.data() + written, (size_t)n - written);
+      if (w <= 0) return fail(w < 0 ? errno : EIO);
+      written += (size_t)w;
+    }
+  }
+  int reader = open(name.c_str(), O_RDONLY | (flags & O_CLOEXEC));
+  if (reader < 0) return fail(errno);
+  struct stat written, opened;
+  if (fstat(fd, &written) != 0 || fstat(reader, &opened) != 0) {
+    const int err = errno; close(reader); return fail(err);
+  }
+  if (written.st_dev != opened.st_dev || written.st_ino != opened.st_ino) {
+    close(reader); return fail(EIO);
+  }
+  if (unlink(name.c_str()) != 0) {
+    const int err = errno; close(reader); close(source); close(fd); errno = err; return -1;
+  }
+  close(source);
+  close(fd);
+  return reader;
+}
+
 int Process::open_appledouble_fork(const std::string& host, int flags) {
   static const std::string suffix = "/..namedfork/rsrc";
   if (!in_system_root(host, opt_.sysroot) || host.size() <= suffix.size() ||

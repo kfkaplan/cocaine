@@ -2,6 +2,14 @@
 
 Moved from the README on 2026-11-18. What doesn't work yet, or works only partly, and why. The README keeps a short list of the ones a user would notice.
 
+- Network reachability lookups work for the tested IPv4 and IPv6 addresses
+  on both CPUs, but PowerPC route translation only supports lookup writes
+  and ordinary reads and writes; other routing messages and APIs are not
+  fully translated. A headless PowerPC Safari 3.1.2 startup loaded its error
+  page for the default URL; the cause has not been established. The DNS fallback reads the host's
+  resolver file on each open, but that file does not describe every macOS
+  VPN or split-DNS configuration. It does not make the missing guest file
+  visible to `stat`, and old TLS implementations may not work with modern sites.
 - PowerPC PEF/CFM launch is experimental. EV Nova 1.0.0 initializes its
   registration tool on 10.5.6 with `F_PREALLOCATE` implemented. The tested
   installation's unregistered trial reports a scenario checksum mismatch;

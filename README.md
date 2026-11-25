@@ -39,6 +39,9 @@ The guest system's screen appears in a window on your Mac.
   visible to guests, including to installers that look for a CD.
 - **Command line tools, shells and scripting languages -** from Leopard -
   `ls`, `bash`, `zsh`, Python 2.5, Perl, Ruby and the rest.
+- **Basic networking -** sockets use the Mac's network. If the guest has no
+  resolver configuration, read-only opens use a private snapshot of the Mac's
+  `/var/run/resolv.conf`.
 
 The cocaine window follows guest display resolution changes. Its View menu has
 Actual Size (one guest pixel per Mac point), Integer Scale (whole screen pixels)
@@ -172,6 +175,10 @@ and apps are tested on both CPUs too.
 - Open and save panels - they come up blank, and VLC's Browse button crashes.
 - The Dock and Finder - apps can't yet start other apps.
 - Copy and paste between apps.
+- Some routing socket operations remain unsupported. Safari 3.1.2 starts and
+  attempts connections, but its default page failed in an earlier headless test.
+  The resolver fallback does not cover all VPN or split-DNS configurations,
+  and old browsers may not support modern sites' TLS requirements.
 - The tools `ps` and `top`.
 - Only one window for the whole guest screen.
 
