@@ -15,6 +15,8 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   launcher preset fixes dark gun-smoke blocks by limiting compressed
   textures to their supplied mip chain, keeping their mipmapped filters.
   The radar, respawn input and smoke fixes were confirmed after restarting.
+  The launcher also enables the preset for full Halo and 32-bit Intel
+  Halo/Halo Demo; those versions have not yet been verified in gameplay.
 - Ghost Recon Demo's extensionless app bundle is recognized and loads via
   LaunchCFMApp. With volume metadata fixed it gets past its installation
   check and reaches its menu using the AGL and GLU hooks. The checked

@@ -374,9 +374,10 @@ final class AppModel: ObservableObject {
   }
 
   static func legacyTextureFilterForRun(_ target: URL, inherited: [String: String]) -> String? {
+    let executable = Bundle(url: target)?.executableURL ?? target
     guard inherited["COCAINE_GL_LEGACY_TEXTURE_FILTER"] == nil,
-          target.lastPathComponent == "Halo Demo",
-          Architectures.of(target).contains(.classicPEF) else { return nil }
+          ["Halo", "Halo Demo"].contains(executable.lastPathComponent),
+          !Architectures.of(target).intersection([.powerpc, .intel]).isEmpty else { return nil }
     return "1"
   }
 
@@ -399,7 +400,7 @@ final class AppModel: ObservableObject {
     }
     if let legacyFilter = Self.legacyTextureFilterForRun(target, inherited: Shell.environment) {
       environment["COCAINE_GL_LEGACY_TEXTURE_FILTER"] = legacyFilter
-      runLog.add("Using legacy texture filtering for Halo Demo...")
+      runLog.add("Using legacy texture filtering for Halo...")
     }
     let command = RunningCommand(binaryPath, args, environment: environment)
     runCommand = command

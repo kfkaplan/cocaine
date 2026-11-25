@@ -314,8 +314,10 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   by sharing contexts and discarded when texture names are deleted.
   Uncompressed replacements restore the requested maximum. This fixes
   Halo's dark smoke blocks without dropping its mipmapped particle filters.
-  The launcher enables this only for the PowerPC PEF Halo
-  Demo: its generated radar texture has no mipmaps and never sets its
+  The launcher enables this for PowerPC and 32-bit Intel programs named
+  `Halo` or `Halo Demo`, including app bundles and universal binaries,
+  unless the environment already sets the flag. The tested PowerPC PEF
+  Demo's generated radar texture has no mipmaps and never sets its
   minification filter, producing a white square with the standard default.
   3D texture uploads honor
   the guest's unpack state and byte order. The host's ARB vertex and fragment
