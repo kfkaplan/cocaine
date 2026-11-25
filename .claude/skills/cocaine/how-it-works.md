@@ -25,8 +25,10 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   only what cares where an element sits is renumbered (`vperm` is a `TBL`
   over {b, a} with index `~c & 31`, `lvx` a load and a 16-byte reverse).
   Vector float ops check the FPSCR rounds to nearest, since AltiVec always
-  does, and leave the rare other case to the interpreter. Anything else
-  rare (the remaining AltiVec, the odder floating point, traps) is done by
+  does, and leave the rare other case to the interpreter. The common FPSCR
+  save and restore instructions are translated too; a restore that changes
+  rounding goes through the interpreter to update the host's rounding mode.
+  Anything else rare (the remaining AltiVec, the odder floating point, traps) is done by
   calling the interpreter for that one instruction, which is what keeps
   the translator small and lets it be checked: the same tests run both ways and must agree bit for bit. When
   guest memory holding code is unmapped, mapped over, or flushed by the
@@ -295,7 +297,9 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   lands in native code that reads the arguments the PowerPC way (integers
   in r3-r10, floats in f1-f13, the rest on the stack) and makes the call on
   the Mac's own library (`src/gl/gl.cpp`, `src/al/al.cpp`). Functions of
-  those libraries that aren't done yet say so once and return 0. Byte
+  those libraries that aren't done yet say so once and return 0. Hook
+  dispatch copies names only for those warnings; implemented calls take the
+  handler and any saved original together under the hook lock. Byte
   order is the work: values in registers need nothing, but matrices,
   vertex and index arrays, glGet answers and 16-bit sound samples are
   big-endian in guest memory and get swapped on the way through. Intel

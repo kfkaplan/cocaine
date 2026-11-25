@@ -60,7 +60,9 @@ and the emulated program must print exactly what the reference prints, bit
 for bit. Each is run twice, translated and interpreted, and each way must
 match. A second, quick test checks every ARM64 instruction the translators
 can emit against the system's assembler
-(`tests/a64-check.sh`). There are three kinds of reference:
+(`tests/a64-check.sh`). The `ppc-fpscr` test compares translated and
+interpreted FPSCR saves and restores across field masks and rounding modes.
+There are three kinds of reference:
 
 - Plain C tests (`t_int`, `t_fp`, `t_fma`, `t_signal`) are built natively for
   this Mac. `t_signal` interrupts a long calculation with a timer's signals

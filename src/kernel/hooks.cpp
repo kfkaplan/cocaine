@@ -23,11 +23,11 @@ namespace {
 struct Hook {
   std::string name;
   void (*fn)(GuestCall&);
+  u32 original = 0;
 };
 std::mutex g_hooks_mu;
 std::vector<Hook> g_hooks;
 std::unordered_map<std::string, u32> g_hook_index;
-std::unordered_map<u32, u32> g_originals;  // hook index -> the guest's own function, moved
 
 // How long the Intel instruction at `p` is, for the few that start functions;
 // 0 for any other.
@@ -389,7 +389,7 @@ void Process::note_code_mapping(u32 at, u32 len, int fd, u64 offset) {
         const u32 kept = keep_original(where);
         if (!kept) log_warn("can't keep the guest's own %s; calls cocaine doesn't handle will fail", name.c_str());
         std::lock_guard<std::mutex> lk(g_hooks_mu);
-        g_originals[index] = kept;
+        g_hooks[index].original = kept;
       }
       plant_host_call(where, kHookCallBase + index);
       taken++;
@@ -450,23 +450,26 @@ u32 Process::keep_original(u32 fn) {
 }
 
 void Process::run_hook(Thread& t, u32 index) {
-  Hook h;
+  void (*fn)(GuestCall&) = nullptr;
+  std::string name;
   u32 original = 0;
   {
     std::lock_guard<std::mutex> lk(g_hooks_mu);
     if (index >= g_hooks.size()) return;
-    h = g_hooks[index];
-    if (auto it = g_originals.find(index); it != g_originals.end()) original = it->second;
+    const Hook& h = g_hooks[index];
+    fn = h.fn;
+    original = h.original;
+    if (!fn) name = h.name;
   }
   GuestCall c(*this, t);
   c.original_ = original;
-  if (h.fn) {
-    h.fn(c);
+  if (fn) {
+    fn(c);
   } else {
     static std::mutex said_mu;
     static std::unordered_set<std::string> said;
     std::lock_guard<std::mutex> lk(said_mu);
-    if (said.insert(h.name).second) log_warn("%s is not passed through to the Mac yet", h.name.c_str());
+    if (said.insert(name).second) log_warn("%s is not passed through to the Mac yet", name.c_str());
     not_done_yet(c);
   }
   // The function's first instruction was the host call: return from it.
