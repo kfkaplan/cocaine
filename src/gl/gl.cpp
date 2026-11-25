@@ -1393,6 +1393,10 @@ void glPolygonOffset_(GuestCall& c) {
   glPolygonOffset(f, u);
 }
 void glLineWidth_(GuestCall& c) { glLineWidth(c.f()); }
+void glLineStipple_(GuestCall& c) {
+  const GLint factor = (GLint)c.i();
+  glLineStipple(factor, (GLushort)c.i());
+}
 void glHint_(GuestCall& c) {
   const GLenum t = c.i();
   glHint(t, c.i());
@@ -1751,9 +1755,22 @@ void glVertex3d_(GuestCall& c) {
 }
 void glVertex2fv_(GuestCall& c) { glVertex2fv(Floats<2>(c, c.i()).v); }
 void glVertex3fv_(GuestCall& c) { glVertex3fv(Floats<3>(c, c.i()).v); }
+void glVertex3dv_(GuestCall& c) { glVertex3dv(Doubles<3>(c, c.i()).v); }
 void glTexCoord2f_(GuestCall& c) {
   const float s = c.f(), t = c.f();
   glTexCoord2f(s, t);
+}
+void glTexCoord2d_(GuestCall& c) {
+  const double s = c.d(), t = c.d();
+  glTexCoord2d(s, t);
+}
+void glTexCoord2i_(GuestCall& c) {
+  const s32 s = (s32)c.i(), t = (s32)c.i();
+  glTexCoord2i(s, t);
+}
+void glTexCoord2s_(GuestCall& c) {
+  const GLshort s = (GLshort)c.i(), t = (GLshort)c.i();
+  glTexCoord2s(s, t);
 }
 void glTexCoord4f_(GuestCall& c) {
   const float s = c.f(), t = c.f(), r = c.f(), q = c.f();
@@ -1769,6 +1786,7 @@ void glColor4f_(GuestCall& c) {
   glColor4f(r, g, b, a);
 }
 void glColor4fv_(GuestCall& c) { glColor4fv(Floats<4>(c, c.i()).v); }
+void glColor3fv_(GuestCall& c) { glColor3fv(Floats<3>(c, c.i()).v); }
 void glColor3i_(GuestCall& c) {
   const s32 r = (s32)c.i(), g = (s32)c.i(), b = (s32)c.i();
   glColor3i(r, g, b);
@@ -1827,6 +1845,28 @@ void glLightf_(GuestCall& c) {
 void glLightfv_(GuestCall& c) {
   const GLenum l = c.i(), p = c.i();
   glLightfv(l, p, Floats<4>(c, c.i(), params_of(p)).v);
+}
+void glGetLightfv_(GuestCall& c) {
+  const GLenum l = c.i(), p = c.i();
+  const u32 address = c.i();
+  if (!address || !c.mem.range_ok(address, 4 * params_of(p), GuestMemory::kWrite)) {
+    log_warn("OpenGL: invalid light query result");
+    return;
+  }
+  const u32 bits = 0x7FA5A5A5;
+  GLfloat marker;
+  memcpy(&marker, &bits, 4);
+  GLfloat v[4];
+  for (GLfloat& value : v) value = marker;
+  glGetLightfv(l, p, v);
+  u8* out = gp(c, address);
+  int n = 4;
+  while (n && memcmp(&v[n - 1], &marker, sizeof(marker)) == 0) n--;
+  for (int k = 0; k < n; k++) {
+    u32 w;
+    memcpy(&w, &v[k], 4);
+    wr32(out + 4 * k, w);
+  }
 }
 void glLightModelfv_(GuestCall& c) {
   const GLenum p = c.i();
@@ -2210,6 +2250,12 @@ void glReadPixels_(GuestCall& c) {
   const GLenum format = c.i(), type = c.i();
   glReadPixels(x, y, w, h, format, type, gp(c, c.i()));
 }
+void glGetTexImage_(GuestCall& c) {
+  const GLenum target = c.i();
+  const GLint level = (GLint)c.i();
+  const GLenum format = c.i(), type = c.i();
+  glGetTexImage(target, level, format, type, gp(c, c.i()));
+}
 void glActiveTextureARB_(GuestCall& c) { glActiveTextureARB(c.i()); }
 
 // ---- GL: vertex arrays ------------------------------------------------------------
@@ -2527,6 +2573,7 @@ const HookSpec kGL[] = {
     H(glScissor), H(glColorMaterial),
     H(glAlphaFunc), H(glCullFace), H(glFrontFace), H(glDepthFunc), H(glDepthMask), H(glColorMask),
     H(glStencilFunc), H(glStencilMask), H(glStencilOp), H(glPolygonMode), H(glPolygonOffset), H(glLineWidth),
+    H(glLineStipple),
     H(glHint), H(glPushAttrib), H(glPopAttrib), H(glPushClientAttrib), H(glPopClientAttrib),
     H(glFinish), H(glFlush), H(glGetError), H(glDrawBuffer), H(glReadBuffer),
     H(glPixelStorei), H(glGetIntegerv), H(glGetBooleanv), H(glGetFloatv), H(glGetDoublev), H(glGetString), H(glMatrixMode),
@@ -2534,14 +2581,15 @@ const HookSpec kGL[] = {
     H(glScalef), H(glRotatef), H(glOrtho), H(glFrustum), H(glClipPlane), H(glBegin), H(glEnd), H(glVertex2f),
     H(glNormal3f), H(glRasterPos2f), H(glBitmap), H(glGenLists), H(glNewList), H(glEndList),
     H(glCallList), H(glCallLists), H(glListBase), H(glDeleteLists),
-    H(glVertex2i), H(glVertex3f), H(glVertex3d), H(glVertex2fv), H(glVertex3fv), H(glTexCoord2f), H(glTexCoord4f), H(glTexCoord2fv),
+    H(glVertex2i), H(glVertex3f), H(glVertex3d), H(glVertex2fv), H(glVertex3fv), H(glVertex3dv),
+    H(glTexCoord2f), H(glTexCoord2d), H(glTexCoord2i), H(glTexCoord2s), H(glTexCoord4f), H(glTexCoord2fv),
     H(glColor3f), H(glColor4f),
-    H(glColor4fv), H(glColor3i), H(glColor3ub), H(glColor4ub), H(glColor3ubv), H(glColor4ubv), H(glRecti),
-    H(glFogf), H(glFogi), H(glFogfv), H(glLightf), H(glLightfv), H(glLightModelfv), H(glMaterialfv),
+    H(glColor4fv), H(glColor3fv), H(glColor3i), H(glColor3ub), H(glColor4ub), H(glColor3ubv), H(glColor4ubv), H(glRecti),
+    H(glFogf), H(glFogi), H(glFogfv), H(glLightf), H(glLightfv), H(glGetLightfv), H(glLightModelfv), H(glMaterialfv),
     H(glTexEnvf), H(glTexEnvi), H(glTexEnvfv), H(glGetTexEnviv), H(glTexGeni), H(glTexGenfv), H(glGenTextures),
     H(glDeleteTextures), H(glBindTexture), H(glTexParameteri), H(glTexParameterf),
     H(glGetTexParameteriv), H(glTexImage2D), H(glTexImage3D),
-    H(glTexSubImage2D), H(glCopyTexSubImage2D), H(glReadPixels), H(glActiveTextureARB), H(glVertexPointer), H(glNormalPointer),
+    H(glTexSubImage2D), H(glCopyTexSubImage2D), H(glReadPixels), H(glGetTexImage), H(glActiveTextureARB), H(glVertexPointer), H(glNormalPointer),
     H(glCompressedTexImage1D), H(glCompressedTexImage2D), H(glCompressedTexImage3D),
     H(glCompressedTexSubImage1D), H(glCompressedTexSubImage2D), H(glCompressedTexSubImage3D),
     H(glGetCompressedTexImage), H(glGetTexLevelParameteriv),

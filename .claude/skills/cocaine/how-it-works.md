@@ -354,6 +354,10 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   yet enforced. `aglGetVersion` calls the guest's own implementation so
   applications see the AGL library's version rather than an unfilled answer;
   `aglGetDrawable` returns the guest port previously set on that context.
+  Stellarium's immediate-mode RGB float colors, double-vector vertices,
+  double/integer texture coordinates, line stippling, light queries and
+  texture readback also go to the host. Vector values and light results
+  use the guest's byte order; texture readback honors its pixel pack state.
   At
   `aglSwapBuffers` cocaine reads the frame back and copies it into the
   game window's own pixels, converting to RGB555 for a 16-bit QuickDraw

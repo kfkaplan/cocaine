@@ -49,7 +49,16 @@ gl.glReadPixels.argtypes = [ctypes.c_int] * 4 + [uint, uint, ctypes.c_void_p]
 gl.glViewport.argtypes = [ctypes.c_int] * 4
 gl.glScissor.argtypes = [ctypes.c_int] * 4
 gl.glColor4f.argtypes = [ctypes.c_float] * 4
+gl.glColor3fv.argtypes = [ctypes.POINTER(ctypes.c_float)]
 gl.glVertex3d.argtypes = [ctypes.c_double] * 3
+gl.glVertex3dv.argtypes = [ctypes.POINTER(ctypes.c_double)]
+gl.glTexCoord2d.argtypes = [ctypes.c_double] * 2
+gl.glTexCoord2i.argtypes = [ctypes.c_int] * 2
+gl.glTexCoord2s.argtypes = [ctypes.c_short] * 2
+gl.glLineStipple.argtypes = [ctypes.c_int, ctypes.c_ushort]
+gl.glLightfv.argtypes = [uint, uint, ctypes.POINTER(ctypes.c_float)]
+gl.glGetLightfv.argtypes = [uint, uint, ctypes.POINTER(ctypes.c_float)]
+gl.glGetTexImage.argtypes = [uint, ctypes.c_int, uint, uint, ctypes.c_void_p]
 gl.glBlendEquation.argtypes = [uint]
 gl.glVertexPointer.argtypes = [ctypes.c_int, uint, ctypes.c_int, ctypes.c_void_p]
 gl.glColorPointer.argtypes = [ctypes.c_int, uint, ctypes.c_int, ctypes.c_void_p]
@@ -278,6 +287,43 @@ gl.glDisableClientState(0x8074)
 gl.glDisableVertexAttribArrayARB(0)
 assert gl.glGetError() == 0
 
+gl.glClear(0x4000)
+gl.glColor3fv((ctypes.c_float * 3)(0.25, 0.5, 0.75))
+gl.glBegin(4)
+for vertex in ((-1, -1, 0), (3, -1, 0), (-1, 3, 0)):
+    gl.glVertex3dv((ctypes.c_double * 3)(*vertex))
+gl.glEnd()
+gl.glReadPixels(0, 0, 1, 1, 0x1908, 0x1401, program_pixel)
+assert all(abs(actual - expected) <= 1 for actual, expected in
+           zip(program_pixel, (64, 128, 191, 255))), tuple(program_pixel)
+coordinates = (ctypes.c_double * 4)()
+for setter, args in ((gl.glTexCoord2d, (0.25, -0.5)),
+                     (gl.glTexCoord2i, (3, -7)),
+                     (gl.glTexCoord2s, (-11, 13))):
+    setter(*args)
+    gl.glGetDoublev(0x0b03, coordinates)
+    assert tuple(coordinates) == args + (0.0, 1.0), tuple(coordinates)
+gl.glLineStipple(3, 0xa53c)
+gl.glGetIntegerv(0x0b25, ctypes.byref(value))
+assert value.value == 0xa53c, value.value
+gl.glGetIntegerv(0x0b26, ctypes.byref(value))
+assert value.value == 3, value.value
+gl.glLineStipple(1, 0xffff)
+gl.glPushAttrib(0x40)
+light = (ctypes.c_float * 4)(0.25, 0.5, 0.75, 1)
+gl.glLightfv(0x4000, 0x1201, light)
+queried_light = (ctypes.c_float * 4)()
+gl.glGetLightfv(0x4000, 0x1201, queried_light)
+assert tuple(queried_light) == tuple(light), tuple(queried_light)
+queried_light[3] = 123
+gl.glGetLightfv(0x4000, 0x1204, queried_light)
+assert tuple(queried_light) == (0, 0, -1, 123), tuple(queried_light)
+gl.glGetLightfv(0xffffffff, 0x1201, queried_light)
+assert gl.glGetError() == 0x0500
+assert tuple(queried_light) == (0, 0, -1, 123), tuple(queried_light)
+gl.glPopAttrib()
+assert gl.glGetError() == 0
+
 gl.glMatrixMode(0x1701)
 gl.glLoadIdentity()
 glu.gluPerspective(90.0, 2.0, 1.0, 11.0)
@@ -430,6 +476,9 @@ gl.glGenTextures(1, ctypes.byref(default_texture))
 gl.glBindTexture(0x0de1, default_texture)
 green_texels = (ctypes.c_ubyte * 16)(*([0, 255, 0, 255] * 4))
 gl.glTexImage2D(0x0de1, 0, 0x1908, 2, 2, 0, 0x1908, 0x1401, green_texels)
+readback = (ctypes.c_float * 16)()
+gl.glGetTexImage(0x0de1, 0, 0x1908, 0x1406, readback)
+assert tuple(readback) == (0, 1, 0, 1) * 4, tuple(readback)
 legacy_filter = os.environ.get("COCAINE_GL_LEGACY_TEXTURE_FILTER") == "1"
 expected = (0, 255, 0, 255) if legacy_filter else (255, 255, 255, 255)
 assert textured_pixel() == expected, tuple(pixel)
