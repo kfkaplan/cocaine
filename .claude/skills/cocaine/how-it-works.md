@@ -363,7 +363,11 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   texture readback also go to the host. Vector values and light results
   use the guest's byte order; texture readback honors its pixel pack state.
   At
-  `aglSwapBuffers` cocaine reads the frame back and copies it into the
+  `aglSwapBuffers` cocaine reads the frame back through a per-context pixel
+  pack buffer, letting the GPU untile and convert the pixels rather than
+  doing that work on the CPU. The buffer is resized with the drawable and
+  mapped immediately for the current frame, without adding a frame of latency;
+  the guest's pixel pack state is restored afterwards. cocaine copies it into the
   game window's own pixels, converting to RGB555 for a 16-bit QuickDraw
   pixmap, then marks the window changed and has the
   guest's QuickDraw flush it, the way a game that drew in software did. The

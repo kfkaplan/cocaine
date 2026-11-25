@@ -174,6 +174,8 @@ struct Context {
   int client_unit = 0;
   std::vector<ClientArrays> client_stack;
   std::vector<u8> frame;
+  GLuint readback = 0;
+  size_t readback_size = 0;
   u32 frames = 0;
   std::shared_ptr<SharedTextures> textures = std::make_shared<SharedTextures>();
 };
@@ -270,7 +272,14 @@ bool port_size(GuestCall& c, u32 port, int& w, int& h) {
   return w > 0 && h > 0;
 }
 
-void read_frame(Context* x) {
+bool read_frame(Context* x) {
+  if (!x->readback) glGenBuffers(1, &x->readback);
+  if (!x->readback) {
+    log_warn("OpenGL: cannot create frame readback buffer");
+    return false;
+  }
+  GLint pack = 0;
+  glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pack);
   glPushClientAttrib(GL_CLIENT_PIXEL_STORE_BIT);
   glPixelStorei(GL_PACK_ALIGNMENT, 4);
   glPixelStorei(GL_PACK_ROW_LENGTH, 0);
@@ -280,12 +289,35 @@ void read_frame(Context* x) {
   GLint read = 0;
   glGetIntegerv(GL_READ_BUFFER, &read);
   glReadBuffer(GL_COLOR_ATTACHMENT0_EXT);
-  // Packed so that each pixel lands in memory in the guest's own order: A R G B
-  // on PowerPC, B G R A on Intel.
-  glReadPixels(0, 0, x->width, x->height, GL_BGRA, g_big ? GL_UNSIGNED_INT_8_8_8_8 : GL_UNSIGNED_INT_8_8_8_8_REV,
-               x->frame.data());
+  // A pack buffer lets the GPU untile the image instead of doing it on the CPU.
+  // Map this frame immediately: no extra frame of presentation latency.
+  glBindBuffer(GL_PIXEL_PACK_BUFFER, x->readback);
+  if (x->readback_size != x->frame.size()) {
+    glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr)x->frame.size(), nullptr, GL_STREAM_READ);
+    GLint allocated = 0;
+    glGetBufferParameteriv(GL_PIXEL_PACK_BUFFER, GL_BUFFER_SIZE, &allocated);
+    x->readback_size = allocated > 0 ? (size_t)allocated : 0;
+  }
+  bool ok = false;
+  if (x->readback_size != x->frame.size()) {
+    log_warn("OpenGL: cannot allocate frame readback buffer (%zu bytes)", x->frame.size());
+  } else {
+    // A R G B on PowerPC, B G R A on Intel.
+    glReadPixels(0, 0, x->width, x->height, GL_BGRA,
+                 g_big ? GL_UNSIGNED_INT_8_8_8_8 : GL_UNSIGNED_INT_8_8_8_8_REV, nullptr);
+    const void* pixels = glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+    if (pixels) {
+      memcpy(x->frame.data(), pixels, x->frame.size());
+      ok = glUnmapBuffer(GL_PIXEL_PACK_BUFFER) == GL_TRUE;
+      if (!ok) log_warn("OpenGL: frame readback buffer became invalid");
+    } else {
+      log_warn("OpenGL: cannot map frame readback buffer");
+    }
+  }
+  glBindBuffer(GL_PIXEL_PACK_BUFFER, (GLuint)pack);
   glReadBuffer((GLenum)read);
   glPopClientAttrib();
+  return ok;
 }
 
 void frame_shown(Context* x, const char* kind) {
@@ -306,7 +338,7 @@ void frame_shown(Context* x, const char* kind) {
 // The frame, into the guest window's pixels, and onto the screen.
 void present(GuestCall& c, Context* x) {
   if (!x->port || !x->fbo) return;
-  read_frame(x);
+  if (!read_frame(x)) return;
   static u32 lock, unlock, pixmap, base, rowbytes, pixdepth, pixbounds, flush, dirty, rect, whole;
   if (!lock) {
     lock = c.symbol("LockPortBits");
@@ -695,6 +727,7 @@ CGLError release_context(GuestCall& c, u32 handle) {
     glDeleteRenderbuffersEXT(1, &x->color);
     glDeleteRenderbuffersEXT(1, &x->auxiliary);
     glDeleteRenderbuffersEXT(1, &x->depth);
+    if (x->readback) glDeleteBuffers(1, &x->readback);
     CGLSetCurrentContext(before);
   }
   release_surface_provider(c, x);
@@ -1075,7 +1108,7 @@ bool present_surface(GuestCall& c, Context* x) {
     say_once("OpenGL: cannot allocate Cocoa surface pixels");
     return false;
   }
-  read_frame(x);
+  if (!read_frame(x)) return false;
   const size_t row = (size_t)x->width * 4;
   for (int y = 0; y < x->height; y++)
     memcpy(c.mem.host(x->guest_frame) + (size_t)y * row,

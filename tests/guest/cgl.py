@@ -735,6 +735,34 @@ try:
     shown = ctypes.string_at(base + (height // 2) * stride + (width // 2) * 4, 4)
     rgb = shown[1:4] if sys.byteorder == "big" else shown[2::-1]
     assert rgb == "\xff\x00\x00", repr(shown)
+    # Keep the pacing-order case's single-frame setup.
+    readback_colors = () if len(sys.argv) > 1 and sys.argv[1] == "pacing-order" else (
+        (0.2, 0.4, 0.8), (0.8, 0.2, 0.4))
+    for red, green, blue in readback_colors:
+        gl.glClearColor(red, green, blue, 0.6)
+        gl.glClear(0x4000)
+        gl.glEnable(0x0c11)
+        gl.glScissor(0, 0, 1, 1)
+        gl.glClearColor(0, 1, 0, 1)
+        gl.glClear(0x4000)
+        gl.glDisable(0x0c11)
+        pack_state = ((0x0d00, 1), (0x0d02, width + 7), (0x0d03, 2),
+                      (0x0d04, 3), (0x0d05, 8))
+        for name, setting in pack_state:
+            gl.glPixelStorei(name, setting)
+        assert cgl.CGLFlushDrawable(ctx) == 0
+        for name, setting in pack_state:
+            gl.glGetIntegerv(name, ctypes.byref(value))
+            assert value.value == setting, (name, value.value, setting)
+        shown = ctypes.string_at(base + (height // 2) * stride + (width // 2) * 4, 4)
+        rgb = shown[1:4] if sys.byteorder == "big" else shown[2::-1]
+        assert tuple(ord(ch) for ch in rgb) == tuple(int(c * 255 + 0.5) for c in (red, green, blue)), repr(shown)
+        shown = ctypes.string_at(base + (height - 1) * stride, 4)
+        rgb = shown[1:4] if sys.byteorder == "big" else shown[2::-1]
+        assert rgb == "\x00\xff\x00", repr(shown)
+        for name, setting in ((0x0d00, 0), (0x0d02, 0), (0x0d03, 0), (0x0d04, 0), (0x0d05, 4)):
+            gl.glPixelStorei(name, setting)
+        assert gl.glGetError() == 0
     if len(sys.argv) > 1 and sys.argv[1] == "pacing-order":
         import threading
         import time
