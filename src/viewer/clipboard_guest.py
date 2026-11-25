@@ -84,6 +84,11 @@ for tag_class, tag, encoding in (
         flavors.append((flavor, encoding))
 file_flavor = legacy_flavor("com.apple.nspboard-type", "NSFilenamesPboardType")
 file_url_flavors = [string("public.file-url"), legacy_flavor("com.apple.ostype", "furl")]
+rich_text_flavors = [
+    ("rtf", [string("public.rtf"), legacy_flavor("com.apple.nspboard-type", "NSRTFPboardType"),
+             legacy_flavor("com.apple.ostype", "RTF ")]),
+    ("html", [string("public.html"), legacy_flavor("com.apple.nspboard-type", "NSHTMLPboardType"),
+              legacy_flavor("com.apple.ostype", "HTML")])]
 image_flavors = [
     ("tiff", [string("public.tiff"), legacy_flavor("com.apple.nspboard-type", "NSTIFFPboardType")]),
     ("png", [string("public.png"), legacy_flavor("com.apple.ostype", "PNGf"),
@@ -191,7 +196,7 @@ def read_content():
         if raw is not None:
             content["text"] = raw.decode(encoding)
             break
-    for kind, choices in image_flavors:
+    for kind, choices in rich_text_flavors + image_flavors:
         for flavor in choices:
             raw = flavor_data(item, flavor, available)
             if raw is not None:
@@ -234,7 +239,7 @@ def write_content(content):
             except UnicodeEncodeError:
                 continue
             put_once(1, flavor, raw)
-    for kind, choices in image_flavors:
+    for kind, choices in rich_text_flavors + image_flavors:
         if kind in content:
             for flavor in choices:
                 put_once(1, flavor, content[kind].data)

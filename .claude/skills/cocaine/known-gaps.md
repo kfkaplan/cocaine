@@ -133,8 +133,9 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   is interpreted. The less common AltiVec and floating point instructions
   are handed to the interpreter one at a time, so code that is mostly
   those runs no faster than before.
-- The viewer's macOS clipboard bridge handles text, TIFF/PNG/JPEG images and
-  file references, not other clipboard formats. Staged folders reject
+- The viewer's macOS clipboard bridge handles plain text, RTF, HTML,
+  TIFF/PNG/JPEG images and file references, not other clipboard formats such
+  as RTFD attachments. Staged folders reject
   absolute or parent-relative symbolic links; headless runs have a guest
   pasteboard but no host bridge.
 - The daemons start afresh with each run that needs them, which costs a

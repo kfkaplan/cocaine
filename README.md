@@ -180,8 +180,8 @@ and apps are tested on both CPUs too.
 - QuickTime, and video in VLC.
 - Open and save panels - they come up blank, and VLC's Browse button crashes.
 - The Dock and Finder - apps can't yet start other apps.
-- Copy and paste of clipboard formats other than text, TIFF/PNG/JPEG images
-  and files.
+- Copy and paste of RTFD attachments and other clipboard formats beyond plain
+  text, RTF, HTML, TIFF/PNG/JPEG images and files.
 - Some routing socket operations remain unsupported. Safari 3.1.2 starts and
   attempts connections, but its default page failed in an earlier headless test.
   The resolver fallback does not cover all VPN or split-DNS configurations,

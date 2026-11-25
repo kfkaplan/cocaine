@@ -160,7 +160,7 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   `launchd` offers: by name over Mach, or by asking on the socket every job
   is started with. Pasteboard lookups wait until `pboard` checks in, because
   its clients need the shared memory it creates during startup. The guest
-  viewer bridges text, TIFF/PNG/JPEG images and file URLs between the guest pasteboard and the macOS general
+  viewer bridges plain text, RTF, HTML, TIFF/PNG/JPEG images and file URLs between the guest pasteboard and the macOS general
   pasteboard (`src/viewer/clipboard.mm` and `clipboard_guest.py`); the
   Leopard Python 2.5 helper reads and writes public and legacy flavors.
   It polls for guest changes, and imports host changes before forwarding

@@ -456,6 +456,10 @@ bool ClipboardBridge::sync(NSPasteboard* host) {
     NSMutableDictionary* content = [NSMutableDictionary dictionary];
     NSString* text = [host stringForType:NSPasteboardTypeString];
     if (text) content[@"text"] = text;
+    for (NSArray* pair in @[@[@"rtf", NSPasteboardTypeRTF], @[@"html", NSPasteboardTypeHTML]]) {
+      NSData* data = [host dataForType:pair[1]];
+      if (data) content[pair[0]] = data;
+    }
     for (NSArray* pair in @[@[@"tiff", NSPasteboardTypeTIFF], @[@"png", NSPasteboardTypePNG],
                             @[@"jpeg", @"public.jpeg"]]) {
       NSData* data = [host dataForType:pair[1]];
@@ -559,6 +563,13 @@ bool ClipboardBridge::sync(NSPasteboard* host) {
     if (text && (![text isKindOfClass:NSString.class] || ![first setString:text forType:NSPasteboardTypeString])) {
       fprintf(stderr, "cocaine: invalid guest clipboard text\n");
       return false;
+    }
+    for (NSArray* pair in @[@[@"rtf", NSPasteboardTypeRTF], @[@"html", NSPasteboardTypeHTML]]) {
+      NSData* data = content[pair[0]];
+      if (data && (![data isKindOfClass:NSData.class] || ![first setData:data forType:pair[1]])) {
+        fprintf(stderr, "cocaine: invalid guest clipboard formatted text\n");
+        return false;
+      }
     }
     for (NSArray* pair in @[@[@"tiff", NSPasteboardTypeTIFF], @[@"png", NSPasteboardTypePNG],
                             @[@"jpeg", @"public.jpeg"]]) {

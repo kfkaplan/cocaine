@@ -126,6 +126,10 @@ ls.UTTypeCreatePreferredIdentifierForTag.restype = ptr
 send0 = ctypes.CFUNCTYPE(ptr, ptr, ptr)(("objc_msgSend", objc))
 send1 = ctypes.CFUNCTYPE(ptr, ptr, ptr, ptr)(("objc_msgSend", objc))
 send2 = ctypes.CFUNCTYPE(ctypes.c_ubyte, ptr, ptr, ptr, ptr)(("objc_msgSend", objc))
+send2ptr = ctypes.CFUNCTYPE(ptr, ptr, ptr, ptr, ptr)(("objc_msgSend", objc))
+send3ptr = ctypes.CFUNCTYPE(ptr, ptr, ptr, ptr, ctypes.c_uint, ptr)(("objc_msgSend", objc))
+send1uint = ctypes.CFUNCTYPE(ctypes.c_uint, ptr, ptr, ptr)(("objc_msgSend", objc))
+send0float = ctypes.CFUNCTYPE(ctypes.c_float, ptr, ptr)(("objc_msgSend", objc))
 sel = objc.sel_registerName
 pool = send0(objc.objc_getClass("NSAutoreleasePool"), sel("new"))
 board = send0(objc.objc_getClass("NSPasteboard"), sel("generalPasteboard"))
@@ -136,6 +140,10 @@ if sys.argv[1].startswith("image-"):
         kind_name = "Apple PNG pasteboard type"
 elif sys.argv[1].startswith("files-"):
     kind_name = "NSFilenamesPboardType"
+elif sys.argv[1].startswith("rtf-"):
+    kind_name = "NSRTFPboardType"
+elif sys.argv[1].startswith("html-"):
+    kind_name = "NSHTMLPboardType"
 kind = cf.CFStringCreateWithCString(None, kind_name, 0x08000100)
 if sys.argv[1] in ("carbon", "binary", "image-carbon-read", "files-carbon-read", "image-png-write", "image-jpeg-write"):
     name = cf.CFStringCreateWithCString(None, "com.apple.pasteboard.clipboard", 0x08000100)
@@ -163,7 +171,7 @@ if sys.argv[1] in ("carbon", "binary", "image-carbon-read", "files-carbon-read",
             raise RuntimeError("Carbon could not read clipboard data")
         raw = ctypes.string_at(cf.CFDataGetBytePtr(data), cf.CFDataGetLength(data))
         print base64.b64encode(raw.decode("utf-16-be").encode("utf-8") if sys.argv[1] == "carbon" else raw)
-elif sys.argv[1] in ("image-write", "files-write"):
+elif sys.argv[1] in ("image-write", "files-write", "rtf-write", "html-write"):
     raw = base64.b64decode(sys.argv[2])
     buf = ctypes.create_string_buffer(raw, len(raw) + 1)
     data = cf.CFDataCreate(None, buf, len(raw))
@@ -174,12 +182,25 @@ elif sys.argv[1] in ("image-write", "files-write"):
         if not value or not send2(board, sel("setPropertyList:forType:"), value, kind):
             raise RuntimeError("Cocoa could not write file clipboard")
     elif not send2(board, sel("setData:forType:"), data, kind):
-        raise RuntimeError("Cocoa could not write image clipboard")
+        raise RuntimeError("Cocoa could not write clipboard data")
     print "ok"
-elif sys.argv[1] in ("image-read", "image-png-read", "files-read"):
+elif sys.argv[1] in ("image-read", "image-png-read", "files-read", "rtf-read", "html-read"):
     data = send1(board, sel("dataForType:"), kind)
     if not data:
         raise RuntimeError("Cocoa could not read clipboard data")
+    if sys.argv[1] == "rtf-read":
+        attributed = send0(objc.objc_getClass("NSAttributedString"), sel("alloc"))
+        attributed = send2ptr(attributed, sel("initWithRTF:documentAttributes:"), data, None)
+        font_key = cf.CFStringCreateWithCString(None, "NSFont", 0x08000100)
+        color_key = cf.CFStringCreateWithCString(None, "NSColor", 0x08000100)
+        font = send3ptr(attributed, sel("attribute:atIndex:effectiveRange:"), font_key, 0, None)
+        color = send3ptr(attributed, sel("attribute:atIndex:effectiveRange:"), color_key, 0, None)
+        manager = send0(objc.objc_getClass("NSFontManager"), sel("sharedFontManager"))
+        space = cf.CFStringCreateWithCString(None, "NSDeviceRGBColorSpace", 0x08000100)
+        color = send1(color, sel("colorUsingColorSpaceName:"), space)
+        if (not attributed or not font or not color or not (send1uint(manager, sel("traitsOfFont:"), font) & 2) or
+                send0float(color, sel("redComponent")) < 0.8 or send0float(color, sel("greenComponent")) > 0.2):
+            raise RuntimeError("Cocoa could not restore rich text formatting")
     raw = ctypes.string_at(cf.CFDataGetBytePtr(data), cf.CFDataGetLength(data))
     print base64.b64encode(raw)
 elif sys.argv[1] == "image-can-read":
@@ -262,6 +283,7 @@ else:
   return n == 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
          result == ((strcmp(operation, "write") == 0 || strcmp(operation, "binary") == 0 ||
                      strcmp(operation, "image-write") == 0 || strcmp(operation, "files-write") == 0 ||
+                     strcmp(operation, "rtf-write") == 0 || strcmp(operation, "html-write") == 0 ||
                      strcmp(operation, "image-png-write") == 0 || strcmp(operation, "image-jpeg-write") == 0 ||
                      strcmp(operation, "image-can-read") == 0 || strcmp(operation, "volume-root") == 0)
                     ? "ok\n" : encode(value) + "\n");
@@ -480,6 +502,42 @@ int main(int argc, char** argv) {
         ok = ok && exchange(writer, reader, "G\n", response) && response == "T";
         ok = ok && guest_client(argv[1], argv[2], session, powerpc, @"", "read");
         if (!ok) fprintf(stderr, "empty text failed\n");
+
+        NSFont* bold = [NSFont boldSystemFontOfSize:17];
+        NSAttributedString* formatted = [[NSAttributedString alloc] initWithString:@"Bold and plain"
+          attributes:@{NSFontAttributeName: bold, NSForegroundColorAttributeName: NSColor.redColor}];
+        NSData* rtf = [formatted RTFFromRange:NSMakeRange(0, formatted.length) documentAttributes:@{}];
+        NSData* html = [@"<html><body><b>Bold</b> and plain</body></html>" dataUsingEncoding:NSUTF8StringEncoding];
+        for (NSArray* rich in @[@[@"rtf", NSPasteboardTypeRTF, rtf],
+                                @[@"html", NSPasteboardTypeHTML, html]]) {
+          NSString* kind = rich[0];
+          NSData* original = rich[2];
+          [host clearContents];
+          ok = ok && [host setString:@"Bold and plain" forType:NSPasteboardTypeString] &&
+               [host setData:original forType:rich[1]] && bridge.sync(host);
+          ok = ok && guest_client(argv[1], argv[2], session, powerpc, @"Bold and plain", "read");
+          NSData* receivedRich = nil;
+          std::string readOperation = std::string(kind.UTF8String) + "-read";
+          std::string writeOperation = std::string(kind.UTF8String) + "-write";
+          ok = ok && guest_client(argv[1], argv[2], session, powerpc, @"",
+                                  readOperation.c_str(), nil, &receivedRich) &&
+               [receivedRich isEqualToData:original];
+          ok = ok && guest_client(argv[1], argv[2], session, powerpc, @"",
+                                  writeOperation.c_str(), original) && bridge.sync(host) &&
+               [[host dataForType:rich[1]] isEqualToData:original];
+          if ([kind isEqualToString:@"rtf"]) {
+            NSAttributedString* restored = [[NSAttributedString alloc]
+              initWithRTF:[host dataForType:NSPasteboardTypeRTF] documentAttributes:nil];
+            NSFont* font = [restored attribute:NSFontAttributeName atIndex:0 effectiveRange:nil];
+            NSColor* color = [[restored attribute:NSForegroundColorAttributeName atIndex:0 effectiveRange:nil]
+              colorUsingColorSpace:NSColorSpace.genericRGBColorSpace];
+            ok = ok && [restored.string isEqualToString:formatted.string] &&
+                 ([[NSFontManager sharedFontManager] traitsOfFont:font] & NSBoldFontMask) &&
+                 color && color.redComponent > 0.8 && color.greenComponent < 0.2;
+          }
+          if (!ok) fprintf(stderr, "%s formatted clipboard failed\n", kind.UTF8String);
+        }
+
         bool copied = ok && guest_copy(argv[1], argv[2], session, powerpc, large);
         bool synced = copied && bridge.sync(host);
         NSString* copiedText = [host stringForType:NSPasteboardTypeString];
