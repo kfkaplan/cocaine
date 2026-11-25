@@ -79,6 +79,8 @@ programs that use threads and fork from them, and `t_ipc`: two processes
 exchanging Mach messages with port rights and out-of-line memory in them.
 `task-for-pid.py` checks self and child task lookup, immediate post-fork
 lookup, exec, process exit, and rejection of processes outside the session.
+`speech.py` checks that two spoken messages finish without a main run loop;
+the test runner also checks that the audio contains nonzero samples.
 Three of Apple's daemons are tested through their clients: the guest system
 must know the person running the tests by name, and one program must hear a
 notification that another posts (`tests/guest/notify.sh`). And Calculator is

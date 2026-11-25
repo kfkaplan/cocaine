@@ -33,6 +33,9 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   The launcher retains its 800x600 starting display as a compatibility
   default. The user confirmed that gameplay displays after the larger
   mode switch was fixed.
+- Leopard's PowerPC Chess accepted several moves with spoken announcements
+  and computer replies in a headless check. Pixel-format requests are not
+  enforced, and speech recognition could not launch.
 - AppleDouble resource forks are exposed read-only from temporary files when
   native metadata is missing. Their file descriptors do not retain the
   original fork's path, and writable sidecar forks are not supported.

@@ -245,6 +245,21 @@ if [ -f "$root/usr/lib/dyld" ]; then
         cat "$log"
         fail=$((fail + 1))
       fi
+      log="$work/speech-$arch.log"
+      audio="$(cd "$work" && pwd)/speech-$arch.raw"
+      actual=$(COCAINE_AUDIO_DUMP="$audio" PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
+        "$root/usr/bin/python2.5" -c "$(cat "$here/guest/speech.py")" 2>"$log")
+      status=$?
+      if [ "$status" -eq 0 ] && [ "$actual" = "speech audio compatibility ok" ] &&
+        python3 -c 'import array, sys; a = array.array("f"); a.frombytes(open(sys.argv[1], "rb").read()); sys.exit(not any(abs(x) > 0.001 for x in a))' "$audio"; then
+        echo "ok    $arch speech audio compatibility"
+        pass=$((pass + 1))
+      else
+        echo "FAIL  $arch speech audio compatibility: $actual"
+        drop_noise "$log"
+        cat "$log"
+        fail=$((fail + 1))
+      fi
       log="$work/sysctl-$arch.log"
       actual=$(PYTHONDONTWRITEBYTECODE=1 "$cocaine" --arch "$arch" --sysroot "$root" \
         "$root/usr/bin/python2.5" -c "$(cat "$here/guest/sysctl.py")" 2>"$log")

@@ -1189,6 +1189,12 @@ void gluPerspective_(GuestCall& c) {
   const double fovy = c.d(), aspect = c.d(), near = c.d(), far = c.d();
   gluPerspective(fovy, aspect, near, far);
 }
+void gluLookAt_(GuestCall& c) {
+  const double eye_x = c.d(), eye_y = c.d(), eye_z = c.d();
+  const double center_x = c.d(), center_y = c.d(), center_z = c.d();
+  const double up_x = c.d(), up_y = c.d(), up_z = c.d();
+  gluLookAt(eye_x, eye_y, eye_z, center_x, center_y, center_z, up_x, up_y, up_z);
+}
 std::unordered_map<u32, GLUquadric*> g_quadrics;
 GLUquadric* quadric_of(u32 handle) {
   std::lock_guard<std::mutex> lk(g_mu);
@@ -1229,6 +1235,12 @@ void gluQuadricTexture_(GuestCall& c) {
   if (!q) return log_warn("OpenGL: invalid GLU quadric");
   gluQuadricTexture(q, texture);
 }
+void gluQuadricOrientation_(GuestCall& c) {
+  GLUquadric* q = quadric_of(c.i());
+  const GLenum orientation = c.i();
+  if (!q) return log_warn("OpenGL: invalid GLU quadric");
+  gluQuadricOrientation(q, orientation);
+}
 void gluSphere_(GuestCall& c) {
   GLUquadric* q = quadric_of(c.i());
   const double radius = c.d();
@@ -1242,6 +1254,21 @@ void gluCylinder_(GuestCall& c) {
   const int slices = (s32)c.i(), stacks = (s32)c.i();
   if (!q) return log_warn("OpenGL: invalid GLU quadric");
   gluCylinder(q, base, top, height, slices, stacks);
+}
+void gluDisk_(GuestCall& c) {
+  GLUquadric* q = quadric_of(c.i());
+  const double inner = c.d(), outer = c.d();
+  const int slices = (s32)c.i(), loops = (s32)c.i();
+  if (!q) return log_warn("OpenGL: invalid GLU quadric");
+  gluDisk(q, inner, outer, slices, loops);
+}
+void gluPartialDisk_(GuestCall& c) {
+  GLUquadric* q = quadric_of(c.i());
+  const double inner = c.d(), outer = c.d();
+  const int slices = (s32)c.i(), loops = (s32)c.i();
+  const double start = c.d(), sweep = c.d();
+  if (!q) return log_warn("OpenGL: invalid GLU quadric");
+  gluPartialDisk(q, inner, outer, slices, loops, start, sweep);
 }
 int pixel_size(GLenum format, GLenum type) {
   int channels = 0, component_size = 0, packed_size = 0;
@@ -1694,6 +1721,10 @@ void glVertex2i_(GuestCall& c) {
 void glVertex3f_(GuestCall& c) {
   const float x = c.f(), y = c.f(), z = c.f();
   glVertex3f(x, y, z);
+}
+void glVertex3d_(GuestCall& c) {
+  const double x = c.d(), y = c.d(), z = c.d();
+  glVertex3d(x, y, z);
 }
 void glVertex2fv_(GuestCall& c) { glVertex2fv(Floats<2>(c, c.i()).v); }
 void glVertex3fv_(GuestCall& c) { glVertex3fv(Floats<3>(c, c.i()).v); }
@@ -2448,7 +2479,7 @@ const HookSpec kGL[] = {
     H(glScalef), H(glRotatef), H(glOrtho), H(glFrustum), H(glClipPlane), H(glBegin), H(glEnd), H(glVertex2f),
     H(glNormal3f), H(glRasterPos2f), H(glBitmap), H(glGenLists), H(glNewList), H(glEndList),
     H(glCallList), H(glCallLists), H(glListBase), H(glDeleteLists),
-    H(glVertex2i), H(glVertex3f), H(glVertex2fv), H(glVertex3fv), H(glTexCoord2f), H(glTexCoord4f), H(glTexCoord2fv),
+    H(glVertex2i), H(glVertex3f), H(glVertex3d), H(glVertex2fv), H(glVertex3fv), H(glTexCoord2f), H(glTexCoord4f), H(glTexCoord2fv),
     H(glColor3f), H(glColor4f),
     H(glColor4fv), H(glColor3i), H(glColor3ub), H(glColor4ub), H(glColor3ubv), H(glColor4ubv), H(glRecti),
     H(glFogf), H(glFogi), H(glFogfv), H(glLightf), H(glLightfv), H(glLightModelfv), H(glMaterialfv),
@@ -2504,10 +2535,12 @@ const HookSpec kAGL[] = {
     {"aglErrorString", aglErrorString},
 };
 const HookSpec kGLU[] = {
-    {"gluOrtho2D", gluOrtho2D}, {"gluPerspective", gluPerspective_},
+    {"gluOrtho2D", gluOrtho2D}, {"gluPerspective", gluPerspective_}, {"gluLookAt", gluLookAt_},
     {"gluNewQuadric", gluNewQuadric_}, {"gluDeleteQuadric", gluDeleteQuadric_},
     {"gluQuadricNormals", gluQuadricNormals_}, {"gluQuadricTexture", gluQuadricTexture_},
-    {"gluSphere", gluSphere_}, {"gluCylinder", gluCylinder_}, {"gluBuild2DMipmaps", gluBuild2DMipmaps_},
+    {"gluQuadricOrientation", gluQuadricOrientation_},
+    {"gluSphere", gluSphere_}, {"gluCylinder", gluCylinder_}, {"gluDisk", gluDisk_},
+    {"gluPartialDisk", gluPartialDisk_}, {"gluBuild2DMipmaps", gluBuild2DMipmaps_},
 };
 const HookSpec kCGL[] = {
     {"CGLChoosePixelFormat", cglChoosePixelFormat},

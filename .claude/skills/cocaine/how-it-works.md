@@ -367,7 +367,10 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   1236 holds an opaque guest word per context, so Preview can retrieve it
   without passing a synthetic context handle into Leopard's CGL code.
   GL Golf uses this path and GLU's
-  quadrics, mipmaps, and perspective functions. CGL fullscreen contexts use
+  quadrics, mipmaps, and perspective functions. Chess also uses GLU's camera
+  and disk functions: these run on the host because Leopard's `gluLookAt`
+  expects a guest OpenGL context, and quadric handles refer to host objects.
+  CGL fullscreen contexts use
   the captured guest display's dimensions and borrowed
   `CGDisplayGetDrawingContext` instead, drawing the same read-back image at
   the display's origin. Clearing or replacing the drawable leaves fullscreen;
@@ -425,7 +428,11 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   cocaine either, so the output units (AUHAL, default and system output)
   are done the same way, on the same thread: their render callbacks are
   called for the format the guest set (16- or 32-bit, either byte order,
-  interleaved or not, resampled if the rate differs), and requests for any
+  interleaved or not, resampled if the rate differs). When a guest connects
+  an upstream audio unit instead of setting a callback, the worker pulls
+  it with the guest's `AudioUnitRender` in the source's output format.
+  Leopard's speech synthesizer uses this path; without it speech stayed busy
+  forever and Chess could spin waiting for an announcement. Requests for any
   other kind of component go on to the guest's own Component Manager. The
   times the guest is told are what matters most: a sample's host time is
   when it will really be heard, measured on the guest's clock (which ticks

@@ -49,17 +49,22 @@ gl.glReadPixels.argtypes = [ctypes.c_int] * 4 + [uint, uint, ctypes.c_void_p]
 gl.glViewport.argtypes = [ctypes.c_int] * 4
 gl.glScissor.argtypes = [ctypes.c_int] * 4
 gl.glColor4f.argtypes = [ctypes.c_float] * 4
+gl.glVertex3d.argtypes = [ctypes.c_double] * 3
 gl.glBlendEquation.argtypes = [uint]
 gl.glVertexPointer.argtypes = [ctypes.c_int, uint, ctypes.c_int, ctypes.c_void_p]
 gl.glColorPointer.argtypes = [ctypes.c_int, uint, ctypes.c_int, ctypes.c_void_p]
 gl.glDrawRangeElements.argtypes = [uint, uint, uint, ctypes.c_int, uint, ctypes.c_void_p]
 glu.gluPerspective.argtypes = [ctypes.c_double] * 4
+glu.gluLookAt.argtypes = [ctypes.c_double] * 9
 glu.gluNewQuadric.restype = uint
 glu.gluDeleteQuadric.argtypes = [uint]
 glu.gluQuadricNormals.argtypes = [uint, uint]
 glu.gluQuadricTexture.argtypes = [uint, ctypes.c_ubyte]
+glu.gluQuadricOrientation.argtypes = [uint, uint]
 glu.gluSphere.argtypes = [uint, ctypes.c_double, ctypes.c_int, ctypes.c_int]
 glu.gluCylinder.argtypes = [uint, ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_int]
+glu.gluDisk.argtypes = [uint, ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_int]
+glu.gluPartialDisk.argtypes = [uint, ctypes.c_double, ctypes.c_double, ctypes.c_int, ctypes.c_int, ctypes.c_double, ctypes.c_double]
 glu.gluBuild2DMipmaps.argtypes = [uint, ctypes.c_int, ctypes.c_int, ctypes.c_int, uint, uint, ctypes.c_void_p]
 
 attrs = (ctypes.c_int * 3)(5, 73, 0)
@@ -280,13 +285,65 @@ matrix = (ctypes.c_double * 16)()
 gl.glGetDoublev(0x0ba7, matrix)
 assert abs(matrix[0] - 0.5) < 0.00001
 assert abs(matrix[5] - 1.0) < 0.00001
+gl.glMatrixMode(0x1700)
+gl.glLoadIdentity()
+glu.gluLookAt(1.0, 2.0, 3.0, 1.0, 2.0, 2.0, 0.0, 1.0, 0.0)
+gl.glGetDoublev(0x0ba6, matrix)
+assert all(abs(matrix[i] - expected) < 0.00001 for i, expected in enumerate(
+    (1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -1, -2, -3, 1))), tuple(matrix)
 q = glu.gluNewQuadric()
 assert q
 glu.gluQuadricNormals(q, 100000)
 glu.gluQuadricTexture(q, 1)
+glu.gluQuadricOrientation(q, 100021)
 glu.gluSphere(q, 1.0, 8, 8)
 glu.gluCylinder(q, 1.0, 0.5, 2.0, 8, 8)
+glu.gluDisk(q, 0.25, 1.0, 8, 2)
+glu.gluPartialDisk(q, 0.25, 1.0, 8, 2, 30.0, 120.0)
 assert gl.glGetError() == 0
+
+gl.glMatrixMode(0x1701)
+gl.glLoadIdentity()
+gl.glMatrixMode(0x1700)
+gl.glLoadIdentity()
+gl.glViewport(0, 0, 32, 32)
+for capability in (0x0b50, 0x0de1, 0x0b71, 0x0be2, 0x0c11, 0x0b44):
+    gl.glDisable(capability)
+gl.glClearColor(0, 0, 0, 1)
+gl.glClear(0x4000)
+gl.glColor4f(0, 1, 0, 1)
+glu.gluQuadricOrientation(q, 100020)
+glu.gluPartialDisk(q, 0.0, 0.9, 16, 1, 0.0, 90.0)
+disk_pixel = (ctypes.c_ubyte * 4)()
+gl.glReadPixels(22, 22, 1, 1, 0x1908, 0x1401, disk_pixel)
+assert tuple(disk_pixel) == (0, 255, 0, 255), tuple(disk_pixel)
+gl.glReadPixels(9, 9, 1, 1, 0x1908, 0x1401, disk_pixel)
+assert tuple(disk_pixel) == (0, 0, 0, 255), tuple(disk_pixel)
+gl.glClear(0x4000)
+glu.gluDisk(q, 0.0, 0.9, 16, 1)
+gl.glReadPixels(9, 9, 1, 1, 0x1908, 0x1401, disk_pixel)
+assert tuple(disk_pixel) == (0, 255, 0, 255), tuple(disk_pixel)
+gl.glEnable(0x0b44)
+gl.glFrontFace(0x0901)
+gl.glCullFace(0x0405)
+gl.glClear(0x4000)
+glu.gluDisk(q, 0.0, 0.9, 16, 1)
+gl.glReadPixels(16, 16, 1, 1, 0x1908, 0x1401, disk_pixel)
+assert tuple(disk_pixel) == (0, 255, 0, 255), tuple(disk_pixel)
+gl.glClear(0x4000)
+glu.gluQuadricOrientation(q, 100021)
+glu.gluDisk(q, 0.0, 0.9, 16, 1)
+gl.glReadPixels(16, 16, 1, 1, 0x1908, 0x1401, disk_pixel)
+assert tuple(disk_pixel) == (0, 0, 0, 255), tuple(disk_pixel)
+gl.glDisable(0x0b44)
+gl.glClear(0x4000)
+gl.glBegin(4)
+gl.glVertex3d(-1.0, -1.0, 0.0)
+gl.glVertex3d(1.0, -1.0, 0.0)
+gl.glVertex3d(0.0, 1.0, 0.0)
+gl.glEnd()
+gl.glReadPixels(16, 16, 1, 1, 0x1908, 0x1401, disk_pixel)
+assert tuple(disk_pixel) == (0, 255, 0, 255), tuple(disk_pixel)
 glu.gluDeleteQuadric(q)
 
 texture = (ctypes.c_ubyte * 16)(*([255, 0, 0, 255, 0, 0, 0, 0] * 2))

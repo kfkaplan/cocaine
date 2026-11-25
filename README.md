@@ -34,6 +34,7 @@ The guest system's screen appears in a window on your Mac.
   smoke textures; command-line runs can use
   `COCAINE_GL_LEGACY_TEXTURE_FILTER=1`.
   OpenGL and OpenAL calls go to your Mac's own graphics and sound.
+  Leopard's PowerPC Chess can play several moves with spoken announcements.
 - **Sound -** VLC plays MP3s through your Mac's speakers.
 - **Copy and paste -** text, TIFF/PNG/JPEG images and files between the guest
   and macOS while the cocaine window is open, using Leopard's Python 2.5.
