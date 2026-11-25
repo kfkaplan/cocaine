@@ -161,6 +161,7 @@ struct Context {
   u32 port = 0;
   u32 connection = 0, window = 0, surface = 0;
   u32 display = 0;
+  u32 private_client_storage = 0;
   u32 surface_rect = 0, window_rect = 0, guest_frame = 0, guest_frame_size = 0;
   float surface_x = 0, surface_y = 0;
   SurfaceFunctions surface_functions;
@@ -1126,14 +1127,37 @@ void cglUpdateContext(GuestCall& c) {
   c.ret(!x->surface || resize_to_surface(c, x) ? kCGLNoError : kCGLBadDrawable);
 }
 
+constexpr u32 kCGLCPPrivateGuestStorage = 1236;
+
 void cglSetParameter(GuestCall& c) {
-  Context* x = context_of(c.i());
+  const u32 handle = c.i();
   const u32 parameter = c.i(), address = c.i();
-  if (!x) return c.ret(kCGLBadContext);
+  std::lock_guard<std::mutex> lk(g_mu);
+  const auto it = g_contexts.find(handle);
+  if (it == g_contexts.end()) return c.ret(kCGLBadContext);
   if (!address || !c.mem.range_ok(address, 4, GuestMemory::kRead)) return c.ret(kCGLBadAddress);
-  const GLint value = (GLint)c.mem.r32(address);
+  const u32 value = c.mem.r32(address);
+  if (parameter == kCGLCPPrivateGuestStorage) {
+    it->second->private_client_storage = value;
+    return c.ret(kCGLNoError);
+  }
   if (parameter == kCGLCPSwapInterval) return c.ret(kCGLNoError);
-  log_warn("OpenGL: CGL context parameter %u is not supported (value %d)", parameter, value);
+  log_warn("OpenGL: CGL context parameter %u is not supported (value %d)", parameter, (GLint)value);
+  c.ret(kCGLBadEnumeration);
+}
+
+void cglGetParameter(GuestCall& c) {
+  const u32 handle = c.i();
+  const u32 parameter = c.i(), address = c.i();
+  std::lock_guard<std::mutex> lk(g_mu);
+  const auto it = g_contexts.find(handle);
+  if (it == g_contexts.end()) return c.ret(kCGLBadContext);
+  if (!address || !c.mem.range_ok(address, 4, GuestMemory::kWrite)) return c.ret(kCGLBadAddress);
+  if (parameter == kCGLCPPrivateGuestStorage) {
+    c.mem.w32(address, it->second->private_client_storage);
+    return c.ret(kCGLNoError);
+  }
+  log_warn("OpenGL: CGL context parameter %u is not supported", parameter);
   c.ret(kCGLBadEnumeration);
 }
 
@@ -2501,6 +2525,7 @@ const HookSpec kCGL[] = {
     {"CGLSetSurface", cglSetSurface},
     {"CGLUpdateContext", cglUpdateContext},
     {"CGLSetParameter", cglSetParameter},
+    {"CGLGetParameter", cglGetParameter},
     {"CGLFlushDrawable", cglFlushDrawable},
 };
 

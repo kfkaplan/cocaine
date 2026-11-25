@@ -352,18 +352,20 @@ SysRet Process::sys_getattrlist(const std::string& path, u32 list, u32 buf, u32 
   const std::string host = host_path(path, follow);
   std::vector<u8> in(16384);
   if (getattrlist(host.c_str(), &al, in.data(), in.size(), options) != 0) return SysRet::err(errno);
-  // Carbon walks parent IDs through /.vol; the imported root represents the
-  // guest's volume root (ID 2), not its physical parent on the host.
-  if ((al.commonattr & ATTR_CMN_PAROBJID) && !opt_.sysroot.empty() &&
-      host.rfind('/') == opt_.sysroot.size() &&
-      host.compare(0, opt_.sysroot.size(), opt_.sysroot) == 0) {
+  // Carbon walks IDs through /.vol; the imported root is volume root ID 2.
+  const bool imported_root = !opt_.sysroot.empty() && host == opt_.sysroot;
+  const bool root_child = !opt_.sysroot.empty() &&
+                          host.rfind('/') == opt_.sysroot.size() &&
+                          host.compare(0, opt_.sysroot.size(), opt_.sysroot) == 0;
+  if ((imported_root || root_child) &&
+      (al.commonattr & (ATTR_CMN_OBJID | ATTR_CMN_PAROBJID))) {
     size_t at = 4;
     for (const AttrDef& d : kCommon) {
       if (!(al.commonattr & d.bit)) continue;
-      if (d.bit == ATTR_CMN_PAROBJID) {
+      if ((imported_root && d.bit == ATTR_CMN_OBJID) ||
+          d.bit == ATTR_CMN_PAROBJID) {
         const u32 root_id[2] = {2, 0};
         memcpy(in.data() + at, root_id, sizeof root_id);
-        break;
       }
       at += host_size(d.type);
     }

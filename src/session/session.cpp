@@ -76,6 +76,7 @@ const char* const kWorkingDaemons[] = {
     "com.apple.SecurityServer",     // securityd: security sessions, keychains
     "com.apple.coreservicesd",      // Launch Services: which apps exist and are running
     "com.apple.configd",            // system settings and their change notices (see kExtraArguments)
+    "com.apple.pboard",             // pasteboards shared by guest programs
 };
 // Arguments added to a daemon's own. configd's plug-ins manage the Mac's
 // real network interfaces, power and Bluetooth, none of which a guest
@@ -225,6 +226,7 @@ class Server {
   // that got in first would find itself behind the login window.
   bool login_pending_ = false;
   static constexpr u64 kGateTimer = 1;
+  static constexpr u64 kPasteboardTimer = 2;
   std::vector<std::vector<u8>> held_;
   void open_gate();
   int job_of(pid_t pid);
@@ -1018,6 +1020,33 @@ void Server::handle(mach_msg_header_t* h) {
         reply_code(reply, id + 100, be, kUnknownService);
         break;
       }
+      if (name == "com.apple.pasteboard.1" && sv.job >= 0 && (!sv.port || sv.held)) {
+        // Unlike most services, clients use pboard's shared memory as soon
+        // as they have its port. It creates that memory before checking in.
+        Job& job = jobs_[(size_t)sv.job];
+        const bool first = !waiting_.count(name);
+        waiting_[name].push_back({reply, id + 100, be});
+        if (!sv.port && !make_port(sv, name)) {
+          answer_waiting(name, MACH_PORT_NULL);
+          break;
+        }
+        if (!job.pid) {
+          launch(job);
+          if (job.pid <= 0) {
+            answer_waiting(name, MACH_PORT_NULL);
+            break;
+          }
+        }
+        if (first) {
+          struct kevent64_s ev;
+          EV_SET64(&ev, kPasteboardTimer, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 25000, 0, 0, 0);
+          if (kevent64(kq_, &ev, 1, nullptr, 0, 0, nullptr) != 0) {
+            log_warn("cannot wait for the pasteboard daemon: %s", strerror(errno));
+            answer_waiting(name, MACH_PORT_NULL);
+          }
+        }
+        break;
+      }
       if (!sv.port && !make_port(sv, name)) {
         reply_code(reply, id + 100, be, kUnknownService);
         break;
@@ -1294,6 +1323,8 @@ void Server::reap() {
       for (const auto& later : kPublishedLater) {
         if (job.label == later.job) answer_waiting(later.service, MACH_PORT_NULL);
       }
+      if (job.label == "com.apple.pboard")
+        answer_waiting("com.apple.pasteboard.1", MACH_PORT_NULL);
       if (job.label == "com.apple.WindowServer" || job.label == "com.apple.loginwindow") {
         login_pending_ = false;
         open_gate();
@@ -1432,7 +1463,12 @@ int Server::run() {
         if (got[i].ident == SIGTERM) done = true;
         reap();
       } else if (got[i].filter == EVFILT_TIMER) {
-        if (gate_) {
+        if (got[i].ident == kPasteboardTimer) {
+          if (waiting_.count("com.apple.pasteboard.1")) {
+            log_warn("the pasteboard daemon was not ready in time");
+            answer_waiting("com.apple.pasteboard.1", MACH_PORT_NULL);
+          }
+        } else if (got[i].ident == kGateTimer && gate_) {
           log_warn("the window server's session was not ready in time; letting programs in anyway");
           login_pending_ = false;
           open_gate();

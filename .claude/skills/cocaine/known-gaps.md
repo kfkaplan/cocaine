@@ -130,8 +130,10 @@ Moved from the README on 2026-11-18. What doesn't work yet, or works only partly
   is interpreted. The less common AltiVec and floating point instructions
   are handed to the interpreter one at a time, so code that is mostly
   those runs no faster than before.
-- The pasteboard server isn't running, so copy and paste between apps
-  doesn't work.
+- The viewer's macOS clipboard bridge handles text, TIFF/PNG/JPEG images and
+  file references, not other clipboard formats. Staged folders reject
+  absolute or parent-relative symbolic links; headless runs have a guest
+  pasteboard but no host bridge.
 - The daemons start afresh with each run that needs them, which costs a
   second or so every time.
 - `task_for_pid` finds guest processes in the same session once they have

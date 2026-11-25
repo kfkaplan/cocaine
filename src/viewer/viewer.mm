@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "viewer/viewer.h"
+#include "viewer/clipboard.h"
 #include "session/pacing.h"
 
 enum class ViewerScale { Actual, Integer, Fit };
@@ -295,7 +296,7 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, ViewerScale m
     scrollX -= more;
   }
   const int32_t record[6] = {(int32_t)kind, (int32_t)guest.x, (int32_t)guest.y, key, extra, more};
-  (void)write(STDOUT_FILENO, record, sizeof record);
+  send_viewer_input(record);
 }
 - (void)keyDown:(NSEvent*)event {
   const NSEventModifierFlags modifiers = event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
@@ -337,7 +338,7 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, ViewerScale m
   moveX = moveY = 0;
   skipMove = false;
   const int32_t record[6] = {(int32_t)kViewerCaptureChanged, hold ? 1 : 0, 0, 0, 0, 0};
-  (void)write(STDOUT_FILENO, record, sizeof record);
+  send_viewer_input(record);
   self.window.title = hold ? @"cocaine: Mac OS X 10.5 - mouse captured (Cmd-Option-M to release)"
                            : @"cocaine: Mac OS X 10.5";
   if (hold) {
@@ -370,7 +371,8 @@ static NSSize viewer_content_size(uint32_t width, uint32_t height, ViewerScale m
 }
 @end
 
-int run_viewer(const char* path, const std::string& session) {
+int run_viewer(const char* path, const std::string& session,
+               const std::string& self, const std::string& sysroot) {
   const int fd = open(path, O_RDONLY);
   struct stat st;
   if (fd < 0 || fstat(fd, &st) != 0 || st.st_size < (off_t)sizeof(DisplayFileHeader)) return 1;
@@ -466,6 +468,7 @@ int run_viewer(const char* path, const std::string& session) {
     window.acceptsMouseMovedEvents = YES;
     [window makeFirstResponder:view];
     signal(SIGPIPE, SIG_IGN);
+    start_clipboard_bridge(self, sysroot, session, head->big_endian != 0);
     [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification
                                                       object:window
                                                        queue:nil
@@ -476,6 +479,11 @@ int run_viewer(const char* path, const std::string& session) {
                                                     const int32_t closed[6] = {0, 0, 0, 0, 0, 0};
                                                     (void)write(STDOUT_FILENO, closed, sizeof closed);
                                                     [NSApp terminate:nil];
+                                                  }];
+    [[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationWillTerminateNotification
+                                                      object:NSApp queue:nil
+                                                  usingBlock:^(NSNotification* note) {
+                                                    stop_clipboard_bridge();
                                                   }];
     // Twice a screen's usual refresh rate; a tick with nothing new costs nothing.
     NSTimer* timer = [NSTimer timerWithTimeInterval:1.0 / 120 target:view selector:@selector(tick:) userInfo:nil repeats:YES];

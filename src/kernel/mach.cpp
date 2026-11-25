@@ -297,6 +297,12 @@ void Process::serve_other_processes(u32 port_set) {
       memcpy(mem_.host(scratch), in.bytes.data(), size);
       answered = kernel_rpc(main_, in.port, kport, scratch, size, reply);
     }
+    if (id == 3807) {
+      // The decoded out-of-line data belongs to this kernel request, not
+      // to guest code. The reply right is still needed below.
+      put(in.bytes, 8, 0);
+      ipc_discard(in);
+    }
     if (!reply_port) continue;
     if (!answered) {
       Message m(be, reply_port, id + 100);
@@ -311,6 +317,11 @@ void Process::serve_other_processes(u32 port_set) {
     put(reply, 8, reply_port);
     put(reply, 12, 0);
     ipc_send(reply.data(), (u32)reply.size(), 0, 0);
+    if (id == 3805 && reply.size() >= 40 && (get(reply, 0) & kComplex) &&
+        get(reply, 24) == 1 && reply[39] == 1) {
+      const u32 at = get(reply, 28), bytes = get(reply, 32);
+      if (at && bytes) mem_.unmap(at, bytes);
+    }
   }
 }
 
@@ -582,7 +593,9 @@ void Process::share_display(u32 addr, u64 shared_bytes) {
   if (!opt_.self_path.empty() && !getenv("COCAINE_NO_VIEWER")) {
     std::string self = opt_.self_path, flag = "--view", file = path;
     std::string sessionFlag = "--session", session = session_name_;
-    char* argv[] = {self.data(), sessionFlag.data(), session.data(), flag.data(), file.data(), nullptr};
+    std::string rootFlag = "--sysroot", root = opt_.sysroot;
+    char* argv[] = {self.data(), sessionFlag.data(), session.data(), rootFlag.data(), root.data(),
+                    flag.data(), file.data(), nullptr};
     // What the viewer writes (the mouse) comes back down a pipe and is
     // posted to the guest's input system.
     int ends[2] = {-1, -1};
@@ -1391,6 +1404,17 @@ bool Process::kernel_rpc(Thread& t, u32 name, const KPort& port, u32 msg, u32 si
           const u32 from = arg(0), bytes = arg(1), to = arg(2);
           if (!mem_.range_ok(from, bytes) || !mem_.range_ok(to, bytes)) return simple(kInvalidAddress);
           memmove(mem_.host(to), mem_.host(from), bytes);
+          return simple(kSuccess);
+        }
+        case 3807: {  // vm_write(destination, out-of-line data)
+          if (size < 56 || !(mem_.r32(msg) & kComplex) || mem_.r32(msg + 24) != 1 ||
+              mem_.r8(msg + 39) != 1) return simple(kInvalidArgument);
+          const u32 from = mem_.r32(msg + 28), bytes = mem_.r32(msg + 32);
+          const u32 to = mem_.r32(msg + 48), count = mem_.r32(msg + 52);
+          if (bytes != count) return simple(kInvalidArgument);
+          if (bytes && (!mem_.range_ok(from, bytes, GuestMemory::kRead) ||
+                        !mem_.range_ok(to, bytes, GuestMemory::kWrite))) return simple(kInvalidAddress);
+          if (bytes) memmove(mem_.host(to), mem_.host(from), bytes);
           return simple(kSuccess);
         }
         case 3805: {  // vm_read(address, size) -> a fresh copy of that memory

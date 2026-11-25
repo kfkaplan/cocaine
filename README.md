@@ -35,6 +35,11 @@ The guest system's screen appears in a window on your Mac.
   `COCAINE_GL_LEGACY_TEXTURE_FILTER=1`.
   OpenGL and OpenAL calls go to your Mac's own graphics and sound.
 - **Sound -** VLC plays MP3s through your Mac's speakers.
+- **Copy and paste -** text, TIFF/PNG/JPEG images and files between the guest
+  and macOS while the cocaine window is open, using Leopard's Python 2.5.
+  Files already visible to both systems are shared by reference; otherwise a
+  temporary copy is made. Staged folders cannot contain absolute or
+  parent-relative symbolic links.
 - **Mounted disk images -** browsable images mounted under `/Volumes` are
   visible to guests, including to installers that look for a CD.
 - **Command line tools, shells and scripting languages -** from Leopard -
@@ -174,7 +179,8 @@ and apps are tested on both CPUs too.
 - QuickTime, and video in VLC.
 - Open and save panels - they come up blank, and VLC's Browse button crashes.
 - The Dock and Finder - apps can't yet start other apps.
-- Copy and paste between apps.
+- Copy and paste of clipboard formats other than text, TIFF/PNG/JPEG images
+  and files.
 - Some routing socket operations remain unsupported. Safari 3.1.2 starts and
   attempts connections, but its default page failed in an earlier headless test.
   The resolver fallback does not cover all VPN or split-DNS configurations,

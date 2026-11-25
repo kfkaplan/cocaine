@@ -76,8 +76,10 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   redirected into that system root; everything else is this Mac's own files.
   PowerPC PEF executables are passed to Leopard's `LaunchCFMApp`. Imported
   AppleDouble sidecars supply missing Finder metadata and read-only resource
-  forks without changing the imported files. Parent IDs for immediate system
-  root children use the guest volume root ID so Carbon can build paths.
+  forks without changing the imported files. The imported root and its parent
+  use guest volume root ID 2, as do the parent IDs of its immediate children,
+  so Carbon and Launch Services can resolve paths without walking into the
+  imported folder's host parent.
   `setattrlist` translates 32-bit timestamps and byte order when Carbon sets
   folder dates and Finder metadata together.
   Volume enumeration uses the imported root's backing volume, including its
@@ -146,7 +148,7 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   to learn which daemon provides which service, hands out service ports, and
   starts Apple's real daemon behind a port, as a guest, when the first
   message arrives for it. Only daemons known to work are on call (`notifyd`,
-  `DirectoryService`, `dirhelper`, `securityd`, `coreservicesd`, `configd`
+  `DirectoryService`, `dirhelper`, `securityd`, `coreservicesd`, `pboard`, `configd`
   (without its plug-ins, `-b`, and in the foreground, `-d`), and
   `WindowServer`, `ATSServer`, `loginwindow` and `hidd`, the last four for Intel
   programs only where the keys to them have been supplied). Each starts in
@@ -156,8 +158,21 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   root, and their messages are stamped as root's, because both they and
   their clients check. A daemon can collect its ports either of the two ways
   `launchd` offers: by name over Mach, or by asking on the socket every job
-  is started with. With `-v` cocaine says where the session's log is; it
-  holds what the server did, what the daemons printed, and everything any
+  is started with. Pasteboard lookups wait until `pboard` checks in, because
+  its clients need the shared memory it creates during startup. The guest
+  viewer bridges text, TIFF/PNG/JPEG images and file URLs between the guest pasteboard and the macOS general
+  pasteboard (`src/viewer/clipboard.mm` and `clipboard_guest.py`); the
+  Leopard Python 2.5 helper reads and writes public and legacy flavors.
+  It polls for guest changes, and imports host changes before forwarding
+  viewer input. Shared files are referenced directly after matching their
+  full device and inode numbers in both views; inaccessible host files are
+  copied into a private temporary directory. Staged folders reject absolute
+  and parent-relative symbolic links, which could escape that directory.
+  Temporary copies are normally removed when the viewer ends unless a guest exports
+  one back to macOS; those are retained so the host clipboard remains usable,
+  and their location is logged. The bridge starts only with a viewer.
+  With `-v` cocaine says where
+  the session's log is; it holds what the server did, what the daemons printed, and everything any
   guest sent to `syslog`, which is often the only place a daemon explains
   itself.
 - **The desktop and the menu bar.** The Dock, which draws Leopard's desktop
@@ -348,7 +363,10 @@ Moved from the README on 2026-11-18. The design of each piece, with the reasons;
   NSOpenGLView uses CGL instead: cocaine takes over CGL context creation,
   connects the offscreen framebuffer to the window server's surface bounds,
   and at `CGLFlushDrawable` draws the read-back pixels into the guest window
-  through its CoreGraphics window context. GL Golf uses this path and GLU's
+  through its CoreGraphics window context. Leopard's private CGL parameter
+  1236 holds an opaque guest word per context, so Preview can retrieve it
+  without passing a synthetic context handle into Leopard's CGL code.
+  GL Golf uses this path and GLU's
   quadrics, mipmaps, and perspective functions. CGL fullscreen contexts use
   the captured guest display's dimensions and borrowed
   `CGDisplayGetDrawingContext` instead, drawing the same read-back image at

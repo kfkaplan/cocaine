@@ -22,6 +22,7 @@ cgl.CGLRetainContext.restype = uint
 cgl.CGLReleaseContext.argtypes = [uint]
 cgl.CGLDestroyContext.argtypes = [uint]
 cgl.CGLSetParameter.argtypes = [uint, uint, intp]
+cgl.CGLGetParameter.argtypes = [uint, uint, intp]
 cgl.CGLSetFullScreen.argtypes = [uint]
 # Leopard 10.5.0's OpenGL doesn't have this one yet; later updates do.
 has_on_display = hasattr(cgl, "CGLSetFullScreenOnDisplay")
@@ -82,6 +83,14 @@ assert cgl.CGLClearDrawable(ctx) == 0
 assert gl.CGLSetCurrentContext(ctx) == 0
 assert gl.CGLGetCurrentContext() == ctx.value
 assert cgl.CGLSetParameter(ctx, 9999, ctypes.byref(value)) == 10010
+value.value = 12345678
+assert cgl.CGLSetParameter(ctx, 1236, ctypes.byref(value)) == 0
+value.value = 0
+assert cgl.CGLGetParameter(ctx, 1236, ctypes.byref(value)) == 0 and value.value == 12345678
+assert cgl.CGLGetParameter(ctx, 9999, ctypes.byref(value)) == 10010
+assert cgl.CGLGetParameter(ctx, 1236, None) == 10014
+assert cgl.CGLGetParameter(ctx, 1236, ctypes.cast(1, intp)) == 10014
+assert cgl.CGLGetParameter(0, 1236, ctypes.byref(value)) == 10004
 
 gl.glPixelStorei(0x0cf0, 0)
 gl.glPushClientAttrib(1)
@@ -457,6 +466,11 @@ shared_fmt = uint()
 shared_ctx = uint()
 assert cgl.CGLChoosePixelFormat(attrs, ctypes.byref(shared_fmt), ctypes.byref(count)) == 0
 assert cgl.CGLCreateContext(shared_fmt, ctx, ctypes.byref(shared_ctx)) == 0
+value.value = -1
+assert cgl.CGLGetParameter(shared_ctx, 1236, ctypes.byref(value)) == 0 and value.value == 0
+value.value = -123
+assert cgl.CGLSetParameter(shared_ctx, 1236, ctypes.byref(value)) == 0
+assert cgl.CGLGetParameter(ctx, 1236, ctypes.byref(value)) == 0 and value.value == 12345678
 assert gl.CGLSetCurrentContext(shared_ctx) == 0
 gl.glBindTexture(0x0de1, short_texture)
 upload_smoke_level(2, 2, 1)
